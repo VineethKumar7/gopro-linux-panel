@@ -26,7 +26,8 @@ Changing the FOV while it is streaming applies immediately; no restart.
 **Preview** — the picture the video device is actually serving, blur and all,
 shown in the panel. It reads V4L2 directly at a downscaled 480x270 and 12 fps, so
 watching costs a fraction of what the stream does, and it works when GNOME's
-Camera app will not.
+Camera app will not. Only one program can open the camera at a time, so switch
+the preview off before joining a call.
 
 **Background blur** — tick a box and the room behind you is blurred *before the
 video device*, so the browser, Meet, Zoom, OBS and anything else get an
@@ -75,6 +76,15 @@ With blur off, frames are copied through untouched.
 (`~/.local/share/gopro-panel/venv`, about 1 GB) rather than in your system
 Python. Say no at the prompt, or set `GOPRO_SKIP_BLUR=1`, and everything else
 still works — the checkbox just won't have anything behind it.
+
+**Latency.** A live camera has to drop frames, never queue them. Upstream's
+ffmpeg line takes the camera's UDP stream with a 50 MB receive buffer, which is
+right for a pipeline that always keeps up and a latency bomb for one that
+doesn't: the backlog is queued rather than dropped, so the picture falls further
+behind real life for as long as the stream runs, and never recovers. The worker
+uses a 1 MB buffer and, before every frame, discards whatever has piled up in the
+decoder's pipe except the newest frame. Latency stays bounded whatever the frame
+rate, and if it is skipping a lot it says so instead of quietly drifting.
 
 **Speed.** The mask is computed on a small copy of each frame and feathered
 while it is still small; the blur is a downscale, a blur and an upscale. The

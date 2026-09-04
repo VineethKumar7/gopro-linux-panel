@@ -280,6 +280,8 @@ class GoProPanel(Gtk.Window):
         self.worker = None          # the gopro-cam stream child, when we started it
         self.preview_proc = None
         self.preview_stop = threading.Event()
+        self.preview_latest = None
+        self.preview_pending = False
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.add(outer)
@@ -386,7 +388,9 @@ class GoProPanel(Gtk.Window):
         self.btn_preview.set_tooltip_text(
             "Show the picture the video device is serving — the same bytes a "
             "browser gets, blur included. Read from V4L2 directly, so it works "
-            "when GNOME's Camera app will not.")
+            "when GNOME's Camera app will not.\n\n"
+            "Only one program can open the camera at a time, so turn this off "
+            "before joining a call.")
         self.btn_preview.connect("toggled", self._on_preview_toggled)
         btns.pack_start(self.btn_preview, False, False, 0)
 
@@ -457,6 +461,8 @@ class GoProPanel(Gtk.Window):
             return
         self.preview_stop.clear()
         self.preview.show()
+        self._append_log("preview on — only one program can open the camera at a "
+                         "time, so switch it off before joining a call\n")
         threading.Thread(target=self._preview_worker, daemon=True).start()
 
     def _stop_preview(self):
@@ -486,8 +492,9 @@ class GoProPanel(Gtk.Window):
     def _preview_worker(self):
         # Downscaled and rate-limited on ffmpeg's side, so watching costs a
         # fraction of what the stream itself does.
-        cmd = ["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "v4l2",
-               "-i", VIDEO_DEV,
+        cmd = ["ffmpeg", "-nostdin", "-loglevel", "error",
+               "-fflags", "nobuffer", "-flags", "low_delay",
+               "-f", "v4l2", "-i", VIDEO_DEV,
                "-vf", f"fps={PREVIEW_FPS},scale={PREVIEW_W}:{PREVIEW_H}",
                "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
         frame_bytes = PREVIEW_W * PREVIEW_H * 3
@@ -504,14 +511,23 @@ class GoProPanel(Gtk.Window):
             raw = proc.stdout.read(frame_bytes)
             if not raw or len(raw) < frame_bytes:
                 break
-            GLib.idle_add(self._show_frame, raw)
+            # Newest frame wins. Posting every frame to the main loop lets them
+            # queue when the UI is busy, and a queue of camera frames is just
+            # latency with extra steps.
+            self.preview_latest = raw
+            if not self.preview_pending:
+                self.preview_pending = True
+                GLib.idle_add(self._show_frame)
         if proc.poll() is None:
             proc.terminate()
         if not self.preview_stop.is_set():
             GLib.idle_add(self._append_log, "preview ended — is the stream still up?\n")
             GLib.idle_add(self.btn_preview.set_active, False)
 
-    def _show_frame(self, raw):
+    def _show_frame(self):
+        raw, self.preview_pending = self.preview_latest, False
+        if raw is None:
+            return False
         pixbuf = GdkPixbuf.Pixbuf.new_from_bytes(
             GLib.Bytes.new(raw), GdkPixbuf.Colorspace.RGB, False, 8,
             PREVIEW_W, PREVIEW_H, PREVIEW_W * 3)

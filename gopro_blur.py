@@ -19,10 +19,13 @@ SPDX-License-Identifier: MIT
 """
 
 import argparse
+import fcntl
 import os
 import signal
+import struct
 import subprocess
 import sys
+import termios
 import time
 from pathlib import Path
 
@@ -158,6 +161,29 @@ def read_exactly(stream, count):
     return bytes(chunks)
 
 
+def drop_backlog(stream, frame_bytes):
+    """Throw away every frame but the newest one waiting in the pipe.
+
+    This is a live camera, so a frame we were too slow to reach is worthless --
+    what matters is that the one we do process is recent. Without this the
+    decoder simply queues ahead of us and the picture drifts further behind real
+    life for as long as the stream runs: it looks like lag, it grows, and it
+    never recovers. Returns how many frames were discarded.
+    """
+    dropped = 0
+    try:
+        fd = stream.fileno()
+        while True:
+            pending = struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, b"\0" * 4))[0]
+            if pending < 2 * frame_bytes:      # leave the newest whole frame
+                return dropped
+            if read_exactly(stream, frame_bytes) is None:
+                return dropped
+            dropped += 1
+    except OSError:
+        return dropped
+
+
 def main():
     ap = argparse.ArgumentParser(description="Blur the background before the video device sees it.")
     ap.add_argument("--device", default="/dev/video42")
@@ -175,8 +201,12 @@ def main():
     frame_bytes = width * height * 3
     control = Control(args.control or control_path(), not args.no_blur, args.strength)
 
+    # A 50 MB receive buffer (upstream's value) is a latency bomb for anything
+    # that cannot keep up: the backlog is queued, never dropped, so the picture
+    # falls further behind for as long as the stream runs. Keep enough to ride
+    # out a hiccup and no more.
     url = (f"udp://@0.0.0.0:{args.port}"
-           f"?overrun_nonfatal=1&fifo_size=50000000&timeout=15000000")
+           f"?overrun_nonfatal=1&fifo_size=1000000&timeout=15000000")
     # The decoder is deliberately quiet: joining a live stream mid-GOP always
     # produces a burst of "non-existing PPS" complaints that mean nothing, and
     # they would drown the GUI's log. A stream that never arrives shows up as
@@ -225,11 +255,12 @@ def main():
     signal.signal(signal.SIGINT, handle)
     signal.signal(signal.SIGTERM, handle)
 
-    frames, slow_frames, since = 0, 0, time.time()
+    frames, slow_frames, dropped, since = 0, 0, 0, time.time()
     budget = 1.0 / args.fps
     status = 0
     try:
         while not stop:
+            dropped += drop_backlog(decoder.stdout, frame_bytes)
             raw = read_exactly(decoder.stdout, frame_bytes)
             if raw is None:
                 log("the camera stream ended")
@@ -262,10 +293,11 @@ def main():
 
             frames += 1
             if time.time() - since >= 10:
-                if slow_frames > frames * 0.2:
-                    log(f"{slow_frames}/{frames} frames missed {args.fps} fps — "
-                        f"try a lower resolution or a smaller --seg-width")
-                frames, slow_frames, since = 0, 0, time.time()
+                if dropped > frames * 0.2:
+                    log(f"{frames / 10:.0f} fps out, {dropped} frames skipped in 10s to "
+                        f"stay current. It stays live either way; drop the resolution "
+                        f"or --seg-width for a smoother picture.")
+                frames, slow_frames, dropped, since = 0, 0, 0, time.time()
     finally:
         for proc in (decoder, encoder):
             if proc.poll() is None:
