@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# gopro-cam: put the GoPro on a v4l2loopback node so any app can pick it as a webcam.
+#
+# The HERO 9-13 have a webcam mode, but only macOS and Windows get a driver for it.
+# Over USB the camera appears as an ethernet device; you ask it over HTTP to start
+# streaming, and it sends MPEG-TS to UDP 8554. The `gopro` script in this repo
+# (Joshua Schmid's, Apache-2.0) does that part. This wrapper adds the pieces that
+# make it pleasant day to day: it finds that script wherever it lives, it keeps
+# one video node, and it reminds you that the camera's microphone is NOT carried
+# over this link, so sound has to come from somewhere else.
+#
+#   gopro-cam start [1080|720|480] [linear|narrow|wide|superview]
+#   gopro-cam stop
+#   gopro-cam status
+#
+# On the camera first: Preferences -> Connections -> USB Connection -> GoPro
+# Connect. Left on MTP it mounts as a disk and nothing here can see it.
+#
+# Optional ~/.config/gopro-panel/config (KEY=value, one per line):
+#   VIDEO_NR=42          the /dev/videoN to create
+#   FOV=narrow           default field of view
+#   RESOLUTION=1080      default resolution
+#   MIC_MATCH=fifine     substring of the PulseAudio source you use as a mic
+#
+# SPDX-License-Identifier: MIT
+set -uo pipefail
+
+CONFIG=${GOPRO_PANEL_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/gopro-panel/config}
+# shellcheck disable=SC1090
+[ -r "$CONFIG" ] && . "$CONFIG"
+
+VIDEO_NR=${VIDEO_NR:-42}
+DEV=/dev/video$VIDEO_NR
+MIC_MATCH=${MIC_MATCH:-}
+FOV=${FOV:-linear}
+RESOLUTION=${RESOLUTION:-1080}
+
+# Find the upstream script: next to us in a clone, installed, or pointed at by
+# $GOPRO_SCRIPT. Resolving it from our own path (not $HOME) matters because
+# gopro-panel runs us under pkexec, where $HOME is /root.
+SELF_DIR=$(dirname "$(readlink -f "$0")")
+GOPRO_BIN=
+for candidate in "${GOPRO_SCRIPT:-}" "$SELF_DIR/../gopro" "$SELF_DIR/gopro" \
+                 /usr/local/sbin/gopro /usr/sbin/gopro; do
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    GOPRO_BIN=$(readlink -f "$candidate")
+    break
+  fi
+done
+
+red()   { printf '\033[0;31m%s\033[0m\n' "$*"; }
+green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
+dim()   { printf '\033[0;90m%s\033[0m\n' "$*"; }
+
+mic_source() {
+  [ -n "$MIC_MATCH" ] || return 0
+  pactl list short sources 2>/dev/null | awk -v m="$MIC_MATCH" \
+    'tolower($2) ~ tolower(m) && $2 !~ /\.monitor$/ {print $2; exit}'
+}
+
+case "${1:-start}" in
+start)
+  if ! modinfo v4l2loopback >/dev/null 2>&1; then
+    red "v4l2loopback is not installed."
+    echo "  sudo apt install -y v4l2loopback-dkms v4l-utils     # Debian/Ubuntu"
+    echo "  sudo dnf install -y v4l2loopback v4l-utils          # Fedora"
+    exit 1
+  fi
+  if [ -z "$GOPRO_BIN" ]; then
+    red "The upstream 'gopro' script is missing."
+    dim "Run this from a clone of the repo, or set GOPRO_SCRIPT=/path/to/gopro."
+    exit 1
+  fi
+  if ! lsusb | grep -qi gopro; then
+    red "No GoPro on USB."
+    dim "Plug it in, power it on, and set Preferences -> Connections -> USB Connection"
+    dim "to 'GoPro Connect'. On MTP the camera is a disk, not a camera."
+    exit 1
+  fi
+  # -a starts ffmpeg itself; -n never waits for a keypress, so this can be
+  # backgrounded. The pattern 'enx' is what the camera's USB ethernet shows up as.
+  #
+  # --video-number in long form on purpose: upstream gives both --non-interactive
+  # and --video-number the short flag -n, and --non-interactive is matched first,
+  # so "-n 42" silently means "non-interactive" and leaves 42 as a stray argument.
+  green "Starting webcam mode -> $DEV"
+  sudo "$GOPRO_BIN" webcam -p enx -n -a \
+       -r "${2:-$RESOLUTION}" -f "${3:-$FOV}" --video-number "$VIDEO_NR"
+  ;;
+stop)
+  sudo pkill -f "v4l2 $DEV" 2>/dev/null
+  sudo pkill -f "gopro webcam" 2>/dev/null
+  sudo modprobe -rf v4l2loopback 2>/dev/null
+  green "Stopped."
+  ;;
+status)
+  if [ -e "$DEV" ]; then green "video: $DEV is up"
+  else dim "video: not running"; fi
+  m=$(mic_source)
+  echo
+  dim "The camera's own microphone is not carried over this link — pick a mic separately."
+  if [ -n "$m" ]; then green "  microphone: $m"
+  elif [ -n "$MIC_MATCH" ]; then red "  microphone: nothing matching '$MIC_MATCH' is plugged in"
+  else dim "  microphone: set MIC_MATCH in $CONFIG to have it named here"; fi
+  dim "  camera:     $DEV"
+  ;;
+*)
+  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  ;;
+esac

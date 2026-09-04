@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=GoPro Panel
+Comment=Webcam and card transfer for a GoPro on USB
+Exec=gopro-panel
+Icon=camera-video
+Terminal=false
+Categories=AudioVideo;Video;Utility;
+StartupNotify=true

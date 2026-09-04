@@ -1,184 +1,207 @@
-# Use your GoPro as a webcam on Linux (without additional hardware)
-> Currently there is no official support for using your GoPro 8, 9, 10, 11, 12 and 13 (the only versions that offer this feature natively) as a webcam on Linux. The web is full of incomplete tutorials for this topic. This script tries to simplify this effort.
+# gopro-linux-panel
 
-## Installation
+Use a GoPro on Linux for the two things it actually gets plugged in for: **being a
+webcam**, and **getting the footage off the card**. One GTK window does both, and a
+shell wrapper does the webcam half from a terminal.
 
-```sh
-git clone https://github.com/jschmid1/gopro_as_webcam_on_linux
-cd gopro_as_webcam_on_linux
-sudo ./install.sh
+GoPro ships a webcam driver for macOS and Windows only. On Linux the camera is
+still perfectly usable — it just needs someone to ask it nicely over USB. This is
+a fork of [jschmid1/gopro_as_webcam_on_linux](https://github.com/jschmid1/gopro_as_webcam_on_linux),
+which does the asking; the GUI, the wrapper, the card transfer and the installer
+are added here.
+
+| Webcam | Transfer |
+|---|---|
+| ![Webcam tab](docs/webcam-tab.png) | ![Transfer tab](docs/transfer-tab.png) |
+
+*(the thumbnails in the second shot are blurred — they are frames of my own footage,
+not part of the UI)*
+
+## What you get
+
+**Webcam tab** — start and stop the stream, choose resolution and field of view,
+and see at a glance whether the video node is live, loaded-but-idle, or off.
+Changing the FOV while it is streaming applies immediately; no restart.
+
+**Transfer tab** — the card listed with thumbnails, sizes and dates. Tick what you
+want, choose a folder, download. Transfers resume if they are interrupted, files
+already on disk are marked so you don't fetch them twice, and there's a
+delete-from-camera button behind a confirmation that warns you by name about
+anything not yet copied across.
+
+**Header** — battery percentage, SD card free space, model and firmware, repolled
+every few seconds.
+
+**No mode switching.** Transfer runs over the same GoPro Connect link as the
+webcam, through the camera's HTTP API. You never touch the USB Connection menu,
+and you can pull files while the webcam is streaming.
+
+## Requirements
+
+* A GoPro that supports webcam mode over USB (HERO 8 and up; developed against a
+  HERO 13 Black)
+* `v4l2loopback`, `ffmpeg`, `curl`, `usbutils`, `iproute2`
+* GTK 3 with Python bindings, and `python3-requests`, for the GUI
+* `polkit` (`pkexec`), so the GUI can ask for a password when it needs root
+
+Debian / Ubuntu:
+
+```bash
+sudo apt install -y v4l2loopback-dkms v4l-utils ffmpeg curl usbutils \
+                    python3-gi python3-gi-cairo gir1.2-gtk-3.0 python3-requests policykit-1
 ```
 
-The `gopro` script is installed at `/usr/local/sbin/gopro`.
+Fedora:
 
-## Usage
-
-``` sh
-sudo gopro webcam
+```bash
+sudo dnf install -y v4l2loopback v4l-utils ffmpeg curl usbutils \
+                    python3-gobject gtk3 python3-requests polkit
 ```
 
-Starts the tool in the interactive mode and tries to identify the GoPro's device, find the interface and ultimately start the webcam mode.
+`v4l2loopback-dkms` builds a kernel module, so it needs your kernel headers
+installed. If you have Secure Boot enabled you will also have to enrol a MOK for
+the module, or the load silently fails.
 
-There are a couple of parameters you can set if this isn't enough. See **Synopsis** or the `--help` text
+## Install
 
-
-## Synopsis
-
-```
-Usage:  action [options...]
-Options:
-  -n,  --non-interactive   do not wait for user input. Use this when used in a startup-script/fstab
-
-  -p,  --device-pattern    provide a device pattern i.e. (enx, lsr) in case the script failed
-                           to detect one by itself.
-
-  -d,  --device            provide a full device name i.e. (enxenx9245589250e7)
-                           USE WITH CAUTION. THIS CHANGES EVERY TIME YOU REBOOT/RECONNECT THE CAMERA
-                           THIS OPTION IS NOT SUITABLE FOR AUTOMATION!
-
-  -r,  --resolution        select the resolution you would like the GoPro to output. "1080", "720", or "480."
-  
-  -f,  --fov               select the FOV you would like to use. "wide", "linear", or "narrow."
-
-  -i,  --ip                provide a IPv4 address to the GoPro i.e. (172.27.187.52)
-                           CAUTION! This may change over time.
-  
-  -a,  --auto-start        automatically start ffmpeg to serve the GoPro as a video device to your operating system.
-                           If this flag is omitted, print the corresponding command to run it yourself.
-
-  -v,  --preview           Just launch a preview in VLC. This will not expose the device to the OS.
-
-  -u,  --user              VLC can't be started as root, please provide a username you want to run it with. (Typically your 'default/home' user)
-
-  -V,  --verbose           echo every command that gets executed
-
-  -n,  --video-number      select the number of video device you would like to use. Default is 42. This means /dev/video42 will be created.
-
-  -P,  --PORT              select the port you would like to use. Default is 8554.
-
-  -h,  --help              display this help
-Commands:
-  webcam                   start the GoPro in webcam mode
-
+```bash
+git clone https://github.com/VineethKumar7/gopro-linux-panel.git
+cd gopro-linux-panel
+./install.sh
 ```
 
-## Formats supported
+Run it **as yourself**, not with `sudo` — it installs into your home and only
+elevates for the one file that goes to `/usr/local/sbin`. It checks the
+dependencies above and tells you what is missing before it touches anything.
 
-After launched in webcam mode, the device only supports one format:
+It installs:
 
-```
-	[0]: 'YU12' (Planar YUV 4:2:0)
-		Size: Discrete 1920x1080
-			Interval: Discrete 0.033s (30.000 fps)
-```
+| Path | What |
+|---|---|
+| `/usr/local/sbin/gopro` | upstream's webcam script (needs root to load the module) |
+| `~/.local/bin/gopro-cam` | the terminal wrapper |
+| `~/.local/bin/gopro-panel` | the GUI launcher |
+| `~/.local/share/gopro-panel/gopro_panel.py` | the GUI |
+| `~/.local/share/applications/gopro-panel.desktop` | app-menu entry |
+| `~/.config/gopro-panel/config` | settings, if you don't already have one |
 
-## Examples
+`./install.sh --uninstall` reverses all of that and leaves your config alone.
 
-`gopro webcam -p enx -n -a`
+You can also just run it out of the clone without installing:
 
-Find a device that matches the pattern 'enx' (which is the gopro device for me) and starts the webcam mode without asking for user input. It also starts `ffmpeg` and exposes the device to the OS.
-
-`gopro webcam -d enxenx9245589250e7 -n -r`
-
-Use the provided device 'enxenx9245589250e7' and do not ask for user input. Just start VLC to preview the output you'll get from the Camera.
-
-
-`gopro webcam -i 172.27.187.52 -a -n`
-
-Use the provided ip '172.27.187.52' and automatically start an ffmpeg to expose the device to the OS. Also don't ask for user input.
-
-
-## Start on boot
-
-It's rather annoying to start this script every time you start up your PC. This is why I provided an example `service` file in this repository.
-
-**Note that the GoPro needs to be plugged in and be in 'standby' mode (Charger symbol) when the computer boots**
-
-
-```
-[Unit]
-Description=GoPro Webcam start script
-After=network-online.target
-Wants=network-online.target systemd-networkd-wait-online.service
-
-[Service]
-ExecStart=/usr/local/sbin/gopro webcam -a -n
-Restart=on-failure
-RestartSec=15s
-
-[Install]
-WantedBy=multi-user.target
+```bash
+./bin/gopro-panel
 ```
 
-Feel free to adapt it to your needs and copy it to `/etc/systemd/system/`
+## Set the camera up first
 
-`sudo cp gopro_webcam.service /etc/systemd/system/`
+**Preferences → Connections → USB Connection → GoPro Connect.**
 
-`sudo systemctl start gopro_webcam.service`
-`sudo systemctl status gopro_webcam.service`
+This is the whole setup, and it is the first thing to check when nothing works.
+On the default *MTP* setting the camera mounts as a disk and nothing here can see
+it. On GoPro Connect it appears as a USB **ethernet** device instead — that is
+what everything below talks to.
 
-Logs can be followed with `sudo journalctl -u gopro_webcam -f`
+## Using it
 
-If all looks fine.
+```bash
+gopro-panel               # the GUI, also in your app menu as "GoPro Panel"
 
-`sudo systemctl enable gopro_webcam.service`
-
-## Start on plug in
-
-You can also start the script when plugging in the usb cable or powering on the camera using udev rules. The script is also stopped without error when unplugging or powering off the camera. You can find an example file `60-gopro.rules` in the repo.
-
-To set this up, first follow the service installation in *Start on boot* above. You can skip the last step `sudo systemctl enable gopro_webcam.service` if you don't want to script to start and fail on every startup.
-
-Then copy the rule file `sudo cp 60-gopro.rules /lib/udev/rules.d/`. Now the setup is complete.
-
-You can check the status using `systemctl` and `journalctl` as described above.
-
-A known issue is that the first service start fails. The second service start then succeeds about 10s later. This is because even the service is only started after the ethernet interface, the network is not fully initialized. The service fails then because no ip is yet available. In the second try, the network is then usually initialized.
-
-Also the udev rule currently only works for HERO8 BLACK. The rules in the file can be duplicated and adapted for every new model supporting webcam mode released by GoPro in the future.
-
-## Dependencies
-
-```sh
-sudo apt install ffmpeg v4l2loopback-dkms curl vlc
-```
-Traffic on port `8554/udp` of the webcam network interface must be enabled
-e.g. with `firewalld`:
-```
-sudo firewall-cmd --add-port 8554/udp
-sudo firewall-cmd --add-port 8554/udp --permanent
+gopro-cam start           # webcam on, with your configured defaults
+gopro-cam start 720 wide  # ... or override resolution and FOV
+gopro-cam status
+gopro-cam stop
 ```
 
-If your distribution doesn't provide `v4l2loopback-dkms` you may get it from https://github.com/umlaeute/v4l2loopback
+Apps enumerate cameras when they start, so start the webcam **before** opening
+Zoom or your browser. If you start it afterwards, Zoom finds it on a rescan in
+Settings → Video and Firefox usually needs a page reload.
+
+**The camera's microphone is not carried over this link.** Only video arrives.
+Pick a separate microphone in whatever app you're using; put a substring of its
+PulseAudio name in `MIC_MATCH` and both tools will remind you which one it is.
+
+## Configuration
+
+`~/.config/gopro-panel/config`, read by the GUI and the shell wrapper alike:
+
+```ini
+VIDEO_NR=42               # the /dev/videoN to create
+FOV=linear                # linear | narrow | wide | superview
+RESOLUTION=1080           # 1080 | 720 | 480
+DEST_DIR=~/Videos/GoPro   # where the Transfer tab saves
+MIC_MATCH=fifine          # substring of your microphone's PulseAudio source
+GOPRO_SCRIPT=             # upstream's `gopro`, if it isn't in /usr/local/sbin
+```
+
+`linear` is still noticeably wider than a normal webcam; `narrow` is the one to
+pick if you want to look like everyone else on the call.
+
+## How it works
+
+Over USB in GoPro Connect mode the camera is an ethernet device (`enx…`) that
+hands your machine a `/24` and sits on `.51` of it. Everything is HTTP to that
+address.
+
+**Webcam.** Upstream's `gopro` script asks the camera to start its webcam stream;
+the camera sends MPEG-TS to **UDP 8554**; `ffmpeg` pipes that into a
+**v4l2loopback** node, which is an ordinary `/dev/videoN` as far as every
+application is concerned. Root is needed only to load `v4l2loopback`, which is
+why the GUI's Start and Stop go through `pkexec` and nothing else does.
+
+**Transfer.** The same address serves GoPro's Open API:
+
+| Endpoint | Used for |
+|---|---|
+| `/gopro/camera/info` | model, firmware |
+| `/gopro/camera/state` | status `70` battery %, `2` battery bars, `54` SD free (KB), `10` recording |
+| `/gopro/media/list` | what's on the card |
+| `/gopro/media/thumbnail?path=DIR/FILE` | thumbnails |
+| `http://<ip>:8080/videos/DCIM/DIR/FILE` | the file itself — honours `Range`, so downloads resume |
+| `/gp/gpWebcam/SETTINGS?fov=N` | change FOV on a running stream (wide 0, narrow 2, superview 3, linear 4) |
+
+Status `8` ("busy") stays high the entire time webcam mode runs, so the panel
+suppresses it while streaming rather than showing a permanent warning.
 
 ## Troubleshooting
 
-### I can't find the network device for my GoPro
-Double check that the USB connection mode is GoPro Connect and not MTP under Preferences -> Connections -> USB Connection. If that options doesn't exist, you likely need a firmware upgrade. Instructions can be found at https://gopro.com/en/us/update.
+**`sudo gopro: command not found`** — the webcam script isn't installed. Run
+`./install.sh`, or point at a clone with `GOPRO_SCRIPT=/path/to/gopro`.
 
-## Release History
+**"No GoPro on USB"** — check `lsusb | grep -i gopro`. If it's there but the panel
+says disconnected, the camera is on MTP; switch it to GoPro Connect.
 
-* 0.0.1
-    * Work in progress
-* 0.0.2
-    * Added args and arg parsing which
-    * Allows to run at OS startup for easily
+**The video node never appears** — `modinfo v4l2loopback` should print a filename.
+If it doesn't, the DKMS build failed: check your kernel headers, and Secure Boot.
+
+**Zoom/Firefox can't see the camera** — start the webcam before the app, or make
+the app rescan.
+
+**Only one video format is offered** (`YU12 1920x1080 @ 30fps`). That is what the
+loopback node is created with; it is not a bug.
+
+**Don't pass `-n 42` to upstream's `gopro` script.** It gives `-n` to both
+`--non-interactive` and `--video-number` and matches non-interactive first, so the
+`42` is silently dropped as a stray argument. `bin/gopro-cam` uses the long form
+`--video-number` for exactly this reason.
+
+## Licensing
+
+Upstream is **Apache-2.0**, which is permissive and does not require derivative
+work to carry the same terms. So everything added by this fork is **MIT** — the
+freest licence available without relicensing anybody else's work.
+
+* `LICENSE` — Apache-2.0, covering upstream's files (`gopro`, `prepare_webcam.sh`,
+  `gopro_webcam.service`, `60-gopro.rules`, and the two files kept verbatim as
+  `*.upstream.*`). None of them has been edited.
+* `LICENSE-MIT` — covering everything added here: `gopro_panel.py`, `bin/`,
+  `share/`, `install.sh`, this README.
+
+`NOTICE` spells out which file falls under which, and records the two upstream
+files that were renamed to make room. Read that before redistributing.
 
 ## Credits
 
-Credits go to https://github.com/KonradIT for a comprehensive documentation and tooling around inofficial GoPro things.
-
-## Buy the developer a cup of coffee!
-
-If you found the utility helpful you can buy me a cup of coffee using
-
-[![Donate](https://www.paypalobjects.com/webstatic/en_US/i/btn/png/silver-pill-paypal-44px.png)](https://www.paypal.com/donate?hosted_button_id=MKPX7GG6MMER8)
-
-
-## Contributing
-
-1. Fork it (<https://github.com/jschmid1/gopro_as_webcam_on_linux/fork>)
-2. Create your feature branch (`git checkout -b feature/fooBar`)
-3. Commit your changes (`git commit -am 'Add some fooBar'`)
-4. Push to the branch (`git push origin feature/fooBar`)
-5. Create a new Pull Request
+The hard part — working out that the camera is an ethernet device and that it will
+stream MPEG-TS at you over UDP — is [Joshua Schmid's](https://github.com/jschmid1),
+in `gopro_as_webcam_on_linux`. This fork wraps it and adds the card transfer.

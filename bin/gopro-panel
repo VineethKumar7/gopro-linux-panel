@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Launcher for gopro_panel.py — works from a clone and from an install.
+# SPDX-License-Identifier: MIT
+set -euo pipefail
+
+SELF_DIR=$(dirname "$(readlink -f "$0")")
+for candidate in "$SELF_DIR/../gopro_panel.py" \
+                 "${XDG_DATA_HOME:-$HOME/.local/share}/gopro-panel/gopro_panel.py" \
+                 /usr/local/share/gopro-panel/gopro_panel.py \
+                 /usr/share/gopro-panel/gopro_panel.py; do
+  if [ -f "$candidate" ]; then
+    exec python3 "$candidate" "$@"
+  fi
+done
+
+echo "gopro-panel: cannot find gopro_panel.py (looked next to me and in the data dirs)" >&2
+exit 1

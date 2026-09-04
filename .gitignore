@@ -1,2 +1,4 @@
 .vscode/
 *workspace
+__pycache__/
+*.pyc

@@ -1,0 +1,55 @@
+gopro-linux-panel
+=================
+
+This repository is a fork of
+
+    gopro_as_webcam_on_linux
+    https://github.com/jschmid1/gopro_as_webcam_on_linux
+    Copyright Joshua Schmid <jxs@posteo.de> and contributors
+    Licensed under the Apache License, Version 2.0 (see LICENSE)
+
+Apache-2.0 is permissive and does not require derivative work to carry the
+same licence, so everything written for this fork is offered under the MIT
+Licence (see LICENSE-MIT) -- the freest terms available to us without
+relicensing anybody else's work.
+
+
+Which licence covers which file
+-------------------------------
+
+Apache-2.0, from upstream, unmodified:
+
+    gopro                    the webcam script that talks to the camera
+    prepare_webcam.sh
+    gopro_webcam.service
+    60-gopro.rules
+    install.upstream.sh      upstream's install.sh, kept verbatim (renamed)
+    README.upstream.md       upstream's README.md, kept verbatim (renamed)
+    LICENSE
+
+MIT, added by this fork:
+
+    bin/gopro-cam
+    bin/gopro-panel
+    gopro_panel.py
+    share/applications/gopro-panel.desktop
+    install.sh
+    README.md
+    NOTICE
+    LICENSE-MIT
+
+
+Changes made to upstream files (Apache-2.0 section 4(b))
+--------------------------------------------------------
+
+No upstream file has been edited. Two were renamed so that this fork could put
+its own files in their place, and both are byte-for-byte as upstream shipped
+them:
+
+    README.md   -> README.upstream.md
+    install.sh  -> install.upstream.sh
+
+The replacements do more than the originals: install.sh also installs the two
+front-ends and a config file, and README.md documents the fork. Upstream's
+`gopro` script itself is called, not copied or modified -- bin/gopro-cam runs
+it as a separate program.
