@@ -136,6 +136,19 @@ and you pick that in your meeting app instead of the camera.
 With blur off there is nothing to run — use the camera directly. The only step
 that needs root is creating the loopback node, so that one goes through pkexec.
 
+**No battery reading, and it is not an oversight.** In USB streaming mode the
+ZV-E10 II exposes only USB Audio and UVC interfaces — there is no PTP/still-image
+interface, so there is no channel to ask a question on, and it publishes no UVC
+controls either (`v4l2-ctl --list-ctrls` is empty). Reading the battery means
+switching the camera to PC Remote mode and using gphoto2, and that mode replaces
+the streaming interfaces: you can have the webcam or the battery reading, not
+both. The GoPro is different only because GoPro Connect happens to carry an HTTP
+API alongside the video.
+
+What those audio interfaces do mean is that the camera's **own microphone** is a
+normal PulseAudio source, so the panel names it for you. (The GoPro carries no
+audio at all over its link.)
+
 Metadata nodes are filtered out (a UVC camera usually brings one along, and it
 enumerates no formats), and so are loopback nodes, so the list is cameras only.
 

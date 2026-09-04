@@ -129,6 +129,27 @@ def cameras():
     return found
 
 
+def audio_source_for(camera_name):
+    """The camera's own microphone, if it brought one.
+
+    A camera in USB streaming mode may expose USB Audio interfaces alongside the
+    video ones -- the ZV-E10 II does -- in which case its mic is a normal
+    PulseAudio source and there is no reason to use a separate one. (The GoPro,
+    by contrast, carries no audio over its link at all.) Matched on the model
+    name, which ALSA puts in the source name.
+    """
+    key = re.sub(r"[^a-z0-9]", "", camera_name.lower())
+    if not key:
+        return None
+    for line in run(["pactl", "list", "short", "sources"]).splitlines():
+        cols = line.split()
+        if len(cols) < 2 or cols[1].endswith(".monitor"):
+            continue
+        if key in re.sub(r"[^a-z0-9]", "", cols[1].lower()):
+            return cols[1]
+    return None
+
+
 def device_users(path):
     """Which processes hold the device open — the answer to 'why is it busy?'."""
     users = []
@@ -188,6 +209,10 @@ class CamPanel(Gtk.Window):
         self.lbl_detail = Gtk.Label(xalign=0)
         self.lbl_detail.set_line_wrap(True)
         box.pack_start(self.lbl_detail, False, False, 0)
+
+        self.lbl_audio = Gtk.Label(xalign=0)
+        self.lbl_audio.set_line_wrap(True)
+        box.pack_start(self.lbl_audio, False, False, 0)
 
         self.lbl_busy = Gtk.Label(xalign=0)
         self.lbl_busy.set_line_wrap(True)
@@ -292,8 +317,23 @@ class CamPanel(Gtk.Window):
         if not cam:
             return
         self.lbl_detail.set_markup(f"<b>{GLib.markup_escape_text(cam.describe())}</b>")
+
+        def find_audio():
+            source = audio_source_for(cam.name)
+            GLib.idle_add(self._show_audio, source)
+        threading.Thread(target=find_audio, daemon=True).start()
         if self.btn_preview.get_active():
             self.btn_preview.set_active(False)
+
+    def _show_audio(self, source):
+        if source:
+            self.lbl_audio.set_markup(
+                "Microphone: this camera carries its own — pick "
+                f"<b>{GLib.markup_escape_text(source)}</b>")
+        else:
+            self.lbl_audio.set_text(
+                "Microphone: this camera carries no audio; pick one separately.")
+        return False
 
     # ---------------------------------------------------------------- blur
 
