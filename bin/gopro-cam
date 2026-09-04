@@ -6,12 +6,21 @@
 # streaming, and it sends MPEG-TS to UDP 8554. The `gopro` script in this repo
 # (Joshua Schmid's, Apache-2.0) does that part. This wrapper adds the pieces that
 # make it pleasant day to day: it finds that script wherever it lives, it keeps
-# one video node, and it reminds you that the camera's microphone is NOT carried
-# over this link, so sound has to come from somewhere else.
+# one video node, it can blur your background on the way through, and it reminds
+# you that the camera's microphone is NOT carried over this link.
 #
 #   gopro-cam start [1080|720|480] [linear|narrow|wide|superview]
 #   gopro-cam stop
 #   gopro-cam status
+#   gopro-cam setup [res] [fov]   just the root half: module + camera stream
+#   gopro-cam stream              just the user half: frames -> video device
+#
+#   --blur / --no-blur            override the configured background blur
+#   --strength N                  blur radius, 1-30
+#
+# `start` is `setup` then `stream`, and `stream` holds the terminal for as long
+# as the camera is live. Only `setup` needs root, which is why they can be run
+# apart: the GUI elevates that half alone.
 #
 # On the camera first: Preferences -> Connections -> USB Connection -> GoPro
 # Connect. Left on MTP it mounts as a disk and nothing here can see it.
@@ -20,7 +29,10 @@
 #   VIDEO_NR=42          the /dev/videoN to create
 #   FOV=narrow           default field of view
 #   RESOLUTION=1080      default resolution
+#   BLUR=off             blur the background by default
+#   BLUR_STRENGTH=8      how much
 #   MIC_MATCH=fifine     substring of the PulseAudio source you use as a mic
+#   GOPRO_SCRIPT=...     upstream's script, if it isn't in /usr/local/sbin
 #
 # SPDX-License-Identifier: MIT
 set -uo pipefail
@@ -34,19 +46,31 @@ DEV=/dev/video$VIDEO_NR
 MIC_MATCH=${MIC_MATCH:-}
 FOV=${FOV:-linear}
 RESOLUTION=${RESOLUTION:-1080}
+BLUR=${BLUR:-off}
+BLUR_STRENGTH=${BLUR_STRENGTH:-8}
+
+SELF_DIR=$(dirname "$(readlink -f "$0")")
+DATA_DIR=${XDG_DATA_HOME:-$HOME/.local/share}
 
 # Find the upstream script: next to us in a clone, installed, or pointed at by
 # $GOPRO_SCRIPT. Resolving it from our own path (not $HOME) matters because
-# gopro-panel runs us under pkexec, where $HOME is /root.
-SELF_DIR=$(dirname "$(readlink -f "$0")")
+# gopro-panel runs `setup` under pkexec, where $HOME is /root.
 GOPRO_BIN=
 for candidate in "${GOPRO_SCRIPT:-}" "$SELF_DIR/../gopro" "$SELF_DIR/gopro" \
                  /usr/local/sbin/gopro /usr/sbin/gopro; do
   if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-    GOPRO_BIN=$(readlink -f "$candidate")
-    break
+    GOPRO_BIN=$(readlink -f "$candidate"); break
   fi
 done
+
+# The blur worker needs mediapipe, which install.sh puts in its own venv so it
+# cannot collide with the system's Python packages.
+BLUR_PY=
+for candidate in "$SELF_DIR/../gopro_blur.py" "$DATA_DIR/gopro-panel/gopro_blur.py"; do
+  [ -f "$candidate" ] && { BLUR_PY=$(readlink -f "$candidate"); break; }
+done
+PYTHON=python3
+[ -x "$DATA_DIR/gopro-panel/venv/bin/python" ] && PYTHON=$DATA_DIR/gopro-panel/venv/bin/python
 
 red()   { printf '\033[0;31m%s\033[0m\n' "$*"; }
 green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
@@ -58,8 +82,24 @@ mic_source() {
     'tolower($2) ~ tolower(m) && $2 !~ /\.monitor$/ {print $2; exit}'
 }
 
-case "${1:-start}" in
-start)
+# ------------------------------------------------------------------ arguments
+ACTION=${1:-start}
+[ $# -gt 0 ] && shift
+POSITIONAL=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --blur)      BLUR=on ;;
+    --no-blur)   BLUR=off ;;
+    --strength)  BLUR_STRENGTH=$2; shift ;;
+    -*)          red "unknown option: $1"; exit 2 ;;
+    *)           POSITIONAL+=("$1") ;;
+  esac
+  shift
+done
+RES=${POSITIONAL[0]:-$RESOLUTION}
+VIEW=${POSITIONAL[1]:-$FOV}
+
+do_setup() {
   if ! modinfo v4l2loopback >/dev/null 2>&1; then
     red "v4l2loopback is not installed."
     echo "  sudo apt install -y v4l2loopback-dkms v4l-utils     # Debian/Ubuntu"
@@ -77,17 +117,33 @@ start)
     dim "to 'GoPro Connect'. On MTP the camera is a disk, not a camera."
     exit 1
   fi
-  # -a starts ffmpeg itself; -n never waits for a keypress, so this can be
-  # backgrounded. The pattern 'enx' is what the camera's USB ethernet shows up as.
+  # No -a: upstream would start its own ffmpeg straight into the video device,
+  # and then there is nowhere to put the blur. Without it, upstream loads the
+  # module and starts the camera streaming to UDP, which is what `stream` wants.
   #
   # --video-number in long form on purpose: upstream gives both --non-interactive
   # and --video-number the short flag -n, and --non-interactive is matched first,
   # so "-n 42" silently means "non-interactive" and leaves 42 as a stray argument.
   green "Starting webcam mode -> $DEV"
-  sudo "$GOPRO_BIN" webcam -p enx -n -a \
-       -r "${2:-$RESOLUTION}" -f "${3:-$FOV}" --video-number "$VIDEO_NR"
-  ;;
+  sudo "$GOPRO_BIN" webcam -p enx -n -r "$RES" -f "$VIEW" --video-number "$VIDEO_NR"
+}
+
+do_stream() {
+  if [ -z "$BLUR_PY" ]; then
+    red "gopro_blur.py is missing — run install.sh, or stream from a clone."
+    exit 1
+  fi
+  local flags=(--device "$DEV" --resolution "$RES" --strength "$BLUR_STRENGTH")
+  [ "$BLUR" = "on" ] || flags+=(--no-blur)
+  exec "$PYTHON" "$BLUR_PY" "${flags[@]}"
+}
+
+case "$ACTION" in
+setup)  do_setup ;;
+stream) do_stream ;;
+start)  do_setup && do_stream ;;
 stop)
+  pkill -f "gopro_blur.py" 2>/dev/null
   sudo pkill -f "v4l2 $DEV" 2>/dev/null
   sudo pkill -f "gopro webcam" 2>/dev/null
   sudo modprobe -rf v4l2loopback 2>/dev/null
@@ -96,6 +152,9 @@ stop)
 status)
   if [ -e "$DEV" ]; then green "video: $DEV is up"
   else dim "video: not running"; fi
+  if pgrep -f "gopro_blur.py" >/dev/null; then
+    green "blur:  worker running (BLUR=$BLUR, strength $BLUR_STRENGTH)"
+  else dim "blur:  no worker"; fi
   m=$(mic_source)
   echo
   dim "The camera's own microphone is not carried over this link — pick a mic separately."
@@ -105,6 +164,6 @@ status)
   dim "  camera:     $DEV"
   ;;
 *)
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
   ;;
 esac

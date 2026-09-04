@@ -23,6 +23,11 @@ not part of the UI)*
 and see at a glance whether the video node is live, loaded-but-idle, or off.
 Changing the FOV while it is streaming applies immediately; no restart.
 
+**Background blur** — tick a box and the room behind you is blurred *before the
+video device*, so the browser, Meet, Zoom, OBS and anything else get an
+already-blurred camera. No extension, no Meet setting, nothing to turn on per
+call. The strength slider moves while you are streaming.
+
 **Transfer tab** — the card listed with thumbnails, sizes and dates. Tick what you
 want, choose a folder, download. Transfers resume if they are interrupted, files
 already on disk are marked so you don't fetch them twice, and there's a
@@ -36,12 +41,57 @@ every few seconds.
 webcam, through the camera's HTTP API. You never touch the USB Connection menu,
 and you can pull files while the webcam is streaming.
 
+## Background blur
+
+Meeting apps that offer blur do it inside their own app, so it only works there —
+and on Linux, Meet's blur is often missing or slow. This does it one layer lower:
+
+```
+camera --UDP--> ffmpeg --raw--> [ segment | blur | composite ] --raw--> ffmpeg --> /dev/videoN
+```
+
+Everything that opens the video device sees the finished picture. There is
+nothing to configure in the meeting app, and it works in apps that have no blur
+of their own.
+
+Turn it on with the checkbox, or:
+
+```bash
+gopro-cam start --blur                 # on, at your configured strength
+gopro-cam start --blur --strength 14   # heavier
+gopro-cam start --no-blur              # off, whatever the config says
+```
+
+The checkbox and slider take effect **on the running stream** — they are written
+to a small control file that the worker re-reads — so you can adjust mid-call.
+With blur off, frames are copied through untouched.
+
+**It needs mediapipe**, which `install.sh` puts in its own venv
+(`~/.local/share/gopro-panel/venv`, about 1 GB) rather than in your system
+Python. Say no at the prompt, or set `GOPRO_SKIP_BLUR=1`, and everything else
+still works — the checkbox just won't have anything behind it.
+
+**Speed.** The mask is computed on a small copy of each frame and feathered
+while it is still small; the blur is a downscale, a blur and an upscale. The
+composite is the expensive part, so it runs on the GPU through OpenCV's OpenCL
+path when one is available (`--opencl auto`, the default). Measured against a
+live 30 fps stream on a laptop RTX 3060:
+
+| | 720p | 1080p |
+|---|---|---|
+| OpenCL | keeps up with 30 fps | keeps up with 30 fps |
+| CPU only | ~25 fps | ~17 fps |
+
+So on a machine with no usable OpenCL, stay at 720p. If it falls behind it says
+so in the log rather than silently dropping frames.
+
 ## Requirements
 
 * A GoPro that supports webcam mode over USB (HERO 8 and up; developed against a
   HERO 13 Black)
 * `v4l2loopback`, `ffmpeg`, `curl`, `usbutils`, `iproute2`
 * GTK 3 with Python bindings, and `python3-requests`, for the GUI
+* for background blur: `python3-venv`, and mediapipe (installed into its own venv)
 * `polkit` (`pkexec`), so the GUI can ask for a password when it needs root
 
 Debian / Ubuntu:
@@ -82,6 +132,8 @@ It installs:
 | `~/.local/bin/gopro-cam` | the terminal wrapper |
 | `~/.local/bin/gopro-panel` | the GUI launcher |
 | `~/.local/share/gopro-panel/gopro_panel.py` | the GUI |
+| `~/.local/share/gopro-panel/gopro_blur.py` | the blur worker |
+| `~/.local/share/gopro-panel/venv` | mediapipe, for blur (optional) |
 | `~/.local/share/applications/gopro-panel.desktop` | app-menu entry |
 | `~/.config/gopro-panel/config` | settings, if you don't already have one |
 
@@ -105,13 +157,19 @@ what everything below talks to.
 ## Using it
 
 ```bash
-gopro-panel               # the GUI, also in your app menu as "GoPro Panel"
+gopro-panel                 # the GUI, also in your app menu as "GoPro Panel"
 
-gopro-cam start           # webcam on, with your configured defaults
-gopro-cam start 720 wide  # ... or override resolution and FOV
+gopro-cam start             # webcam on, with your configured defaults
+gopro-cam start 720 wide    # ... or override resolution and FOV
+gopro-cam start --blur      # ... with the background blurred
 gopro-cam status
 gopro-cam stop
 ```
+
+`start` is two halves — `setup`, which loads the kernel module and asks the
+camera to stream, and `stream`, which carries frames to the video device and
+holds the terminal. Only `setup` needs root, so the GUI elevates that one alone
+and runs the frame-carrying half as you.
 
 Apps enumerate cameras when they start, so start the webcam **before** opening
 Zoom or your browser. If you start it afterwards, Zoom finds it on a rescan in
@@ -131,8 +189,13 @@ FOV=linear                # linear | narrow | wide | superview
 RESOLUTION=1080           # 1080 | 720 | 480
 DEST_DIR=~/Videos/GoPro   # where the Transfer tab saves
 MIC_MATCH=fifine          # substring of your microphone's PulseAudio source
+BLUR=off                  # blur the background by default
+BLUR_STRENGTH=8           # how much, 1-30
 GOPRO_SCRIPT=             # upstream's `gopro`, if it isn't in /usr/local/sbin
 ```
+
+The GUI writes `BLUR` and `BLUR_STRENGTH` back here when you change them, so the
+checkbox remembers itself.
 
 `linear` is still noticeably wider than a normal webcam; `narrow` is the one to
 pick if you want to look like everyone else on the call.
@@ -177,6 +240,12 @@ If it doesn't, the DKMS build failed: check your kernel headers, and Secure Boot
 **Zoom/Firefox can't see the camera** — start the webcam before the app, or make
 the app rescan.
 
+**Blur is greyed out or the worker exits immediately** — mediapipe isn't
+installed. Re-run `./install.sh` and say yes to the venv.
+
+**"would not accept video — is something else already writing to it"** — an
+older ffmpeg still owns the loopback node. `gopro-cam stop`, then start again.
+
 **Only one video format is offered** (`YU12 1920x1080 @ 30fps`). That is what the
 loopback node is created with; it is not a bug.
 
@@ -194,8 +263,8 @@ freest licence available without relicensing anybody else's work.
 * `LICENSE` — Apache-2.0, covering upstream's files (`gopro`, `prepare_webcam.sh`,
   `gopro_webcam.service`, `60-gopro.rules`, and the two files kept verbatim as
   `*.upstream.*`). None of them has been edited.
-* `LICENSE-MIT` — covering everything added here: `gopro_panel.py`, `bin/`,
-  `share/`, `install.sh`, this README.
+* `LICENSE-MIT` — covering everything added here: `gopro_panel.py`,
+  `gopro_blur.py`, `bin/`, `share/`, `install.sh`, this README.
 
 `NOTICE` spells out which file falls under which, and records the two upstream
 files that were renamed to make room. Read that before redistributing.

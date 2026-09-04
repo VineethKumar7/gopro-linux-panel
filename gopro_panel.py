@@ -73,6 +73,37 @@ DEFAULT_DEST = Path(os.path.expanduser(CONFIG.get("DEST_DIR", "~/Videos/GoPro"))
 MIC_MATCH = CONFIG.get("MIC_MATCH", "")
 DEFAULT_FOV = CONFIG.get("FOV", "linear")
 DEFAULT_RESOLUTION = CONFIG.get("RESOLUTION", "1080")
+DEFAULT_BLUR = CONFIG.get("BLUR", "off").lower() in ("1", "on", "true", "yes")
+DEFAULT_STRENGTH = int(CONFIG.get("BLUR_STRENGTH", "8"))
+
+
+def control_file():
+    """Where the running blur worker looks for live settings."""
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    return runtime / "gopro-panel/blur.conf"
+
+
+def remember(**pairs):
+    """Write settings back to the config file, touching only those keys."""
+    path = Path(os.environ.get(
+        "GOPRO_PANEL_CONFIG",
+        Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "gopro-panel/config"))
+    try:
+        lines = path.read_text().splitlines() if path.exists() else []
+    except OSError:
+        return
+    for key, value in pairs.items():
+        for i, line in enumerate(lines):
+            if line.split("=", 1)[0].strip() == key:
+                lines[i] = f"{key}={value}"
+                break
+        else:
+            lines.append(f"{key}={value}")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n")
+    except OSError:
+        pass
 
 
 def find_gopro_cam():
@@ -171,7 +202,7 @@ class CameraLink:
 
 
 def webcam_state():
-    """(device present, something actually feeding it)."""
+    """(device present, something feeding it, the blur worker running)."""
     present = os.path.exists(VIDEO_DEV)
     feeding = False
     if present:
@@ -181,7 +212,9 @@ def webcam_state():
             feeding = VIDEO_DEV in out
         except Exception:
             pass
-    return present, feeding
+    blurring = subprocess.run(["pgrep", "-f", "gopro_blur.py"],
+                              capture_output=True).returncode == 0
+    return present, feeding, blurring
 
 
 def mic_source():
@@ -212,6 +245,7 @@ class GoProPanel(Gtk.Window):
         self.cancel_download = threading.Event()
         self.files = []
         self.busy_with_transfer = False
+        self.worker = None          # the gopro-cam stream child, when we started it
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.add(outer)
@@ -285,12 +319,33 @@ class GoProPanel(Gtk.Window):
         opts.pack_start(self.cmb_fov, False, False, 0)
         box.pack_start(opts, False, False, 0)
 
+        blur = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.chk_blur = Gtk.CheckButton(label="Blur the background")
+        self.chk_blur.set_active(DEFAULT_BLUR)
+        self.chk_blur.set_tooltip_text(
+            "Applied before the video device, so browsers and meeting apps get it "
+            "already blurred — no plugin, no Meet setting.")
+        self.chk_blur.connect("toggled", self._on_blur_changed)
+        blur.pack_start(self.chk_blur, False, False, 0)
+
+        self.adj_strength = Gtk.Adjustment(value=DEFAULT_STRENGTH, lower=1, upper=30,
+                                           step_increment=1, page_increment=5)
+        self.sld_strength = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL,
+                                      adjustment=self.adj_strength)
+        self.sld_strength.set_digits(0)
+        self.sld_strength.set_size_request(180, -1)
+        self.sld_strength.set_value_pos(Gtk.PositionType.RIGHT)
+        self.sld_strength.set_sensitive(DEFAULT_BLUR)
+        self.sld_strength.connect("value-changed", self._on_blur_changed)
+        blur.pack_start(self.sld_strength, False, False, 0)
+        box.pack_start(blur, False, False, 0)
+
         btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.btn_start = Gtk.Button(label="Start webcam")
-        self.btn_start.connect("clicked", lambda _w: self._run_gopro_cam("start"))
+        self.btn_start.connect("clicked", lambda _w: self._start_webcam())
         btns.pack_start(self.btn_start, False, False, 0)
         self.btn_stop = Gtk.Button(label="Stop")
-        self.btn_stop.connect("clicked", lambda _w: self._run_gopro_cam("stop"))
+        self.btn_stop.connect("clicked", lambda _w: self._stop_webcam())
         btns.pack_start(self.btn_stop, False, False, 0)
         box.pack_start(btns, False, False, 0)
 
@@ -311,7 +366,7 @@ class GoProPanel(Gtk.Window):
         """A running stream takes a new FOV without a restart, so just send it."""
         name = combo.get_active_text()
         fov_id = dict(FOVS).get(name)
-        _, feeding = webcam_state()
+        feeding = webcam_state()[1]
         if not feeding or fov_id is None or not self.cam.ip:
             return
         def work():
@@ -322,31 +377,72 @@ class GoProPanel(Gtk.Window):
                 GLib.idle_add(self._append_log, f"FOV change failed: {e}\n")
         threading.Thread(target=work, daemon=True).start()
 
-    def _run_gopro_cam(self, action):
-        if not shutil.which("pkexec"):
-            self._append_log("pkexec is missing — run `gopro-cam %s` in a terminal.\n" % action)
-            return
-        cmd = ["pkexec", str(GOPRO_CAM), action]
-        if action == "start":
-            cmd += [self.cmb_res.get_active_text(), self.cmb_fov.get_active_text()]
-        self.btn_start.set_sensitive(False)
-        self.btn_stop.set_sensitive(False)
+    def _on_blur_changed(self, _widget=None):
+        """Write the live-settings file; the worker picks it up mid-stream."""
+        enabled = self.chk_blur.get_active()
+        strength = int(self.adj_strength.get_value())
+        self.sld_strength.set_sensitive(enabled)
+        path = control_file()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"enabled={1 if enabled else 0}\nstrength={strength}\n")
+        except OSError as e:
+            self._append_log(f"could not write {path}: {e}\n")
+        remember(BLUR="on" if enabled else "off", BLUR_STRENGTH=strength)
+
+    def _spawn(self, cmd, then=None):
+        """Run a command, funnel its output into the log, don't block the UI."""
         self._append_log("$ %s\n" % " ".join(cmd))
 
         def work():
             try:
-                p = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT, text=True)
-                for line in p.stdout:
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True)
+                if then is None:
+                    self.worker = proc
+                for line in proc.stdout:
                     GLib.idle_add(self._append_log, line)
-                p.wait()
-                if p.returncode != 0:
-                    GLib.idle_add(self._append_log,
-                                  f"[exited {p.returncode}]\n")
+                proc.wait()
+                if proc.returncode not in (0, -15):
+                    GLib.idle_add(self._append_log, f"[exited {proc.returncode}]\n")
+                elif then is not None:
+                    GLib.idle_add(then)
+                    return
             except Exception as e:
                 GLib.idle_add(self._append_log, f"failed: {e}\n")
             GLib.idle_add(self._set_webcam_buttons_sensitive, True)
         threading.Thread(target=work, daemon=True).start()
+
+    def _start_webcam(self):
+        """Two halves: the root one loads the module, the user one carries frames.
+
+        Keeping them apart is what lets the blur worker run as you — it writes to
+        the loopback node, which logind's ACL already gives you — so only the
+        module load ever asks for a password.
+        """
+        if not shutil.which("pkexec"):
+            self._append_log("pkexec is missing — run `gopro-cam start` in a terminal.\n")
+            return
+        self._set_webcam_buttons_sensitive(False)
+        self._on_blur_changed()
+        res, fov = self.cmb_res.get_active_text(), self.cmb_fov.get_active_text()
+        setup = ["pkexec", str(GOPRO_CAM), "setup", res, fov]
+        self._spawn(setup, then=lambda: self._start_stream(res))
+
+    def _start_stream(self, res):
+        stream = [str(GOPRO_CAM), "stream", res,
+                  "--strength", str(int(self.adj_strength.get_value()))]
+        stream.append("--blur" if self.chk_blur.get_active() else "--no-blur")
+        self.btn_stop.set_sensitive(True)
+        self._spawn(stream)
+
+    def _stop_webcam(self):
+        self._set_webcam_buttons_sensitive(False)
+        if self.worker and self.worker.poll() is None:
+            self.worker.terminate()
+        self.worker = None
+        self._spawn(["pkexec", str(GOPRO_CAM), "stop"], then=lambda: None)
+        GLib.timeout_add(1500, self._set_webcam_buttons_sensitive, True)
 
     def _set_webcam_buttons_sensitive(self, on):
         self.btn_start.set_sensitive(on)
@@ -509,8 +605,7 @@ class GoProPanel(Gtk.Window):
             return
         dest = Path(self.chooser.get_filename() or DEFAULT_DEST)
         dest.mkdir(parents=True, exist_ok=True)
-        _, feeding = webcam_state()
-        if feeding:
+        if webcam_state()[1]:
             self._append_log("Note: the webcam stream is live; downloads will share the link.\n")
         self.cancel_download.clear()
         self.btn_download.set_sensitive(False)
@@ -665,15 +760,17 @@ class GoProPanel(Gtk.Window):
                 bits.append(f"SD free {human_bytes(int(free_kb) * 1024)}")
             if st.get(ST_ENCODING):
                 bits.append("recording")
-            elif st.get(ST_BUSY) and not s["webcam"][1]:
+            elif st.get(ST_BUSY) and not s["webcam"][1]:  # webcam mode pins busy high
                 bits.append("busy")
             self.lbl_sd.set_text("   ".join(bits))
             self.btn_start.set_sensitive(True)
 
-        present, feeding = s["webcam"]
+        present, feeding, blurring = s["webcam"]
         if feeding:
+            extra = " · background blurred" if blurring and self.chk_blur.get_active() else ""
             self.lbl_video.set_markup(
-                f"<span foreground='#080'>● live</span>  {VIDEO_DEV} — pick “GoPro” as the camera")
+                f"<span foreground='#080'>● live</span>  {VIDEO_DEV} — "
+                f"pick “GoPro” as the camera{extra}")
         elif present:
             self.lbl_video.set_markup(
                 f"<span foreground='#a60'>◐ loopback loaded but nothing is feeding it</span>  {VIDEO_DEV}")
@@ -695,6 +792,8 @@ class GoProPanel(Gtk.Window):
     def _on_destroy(self, _w):
         self.stop_event.set()
         self.cancel_download.set()
+        if self.worker and self.worker.poll() is None:
+            self.worker.terminate()
         Gtk.main_quit()
 
 

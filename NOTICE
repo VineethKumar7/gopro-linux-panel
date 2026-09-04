@@ -32,6 +32,7 @@ MIT, added by this fork:
     bin/gopro-cam
     bin/gopro-panel
     gopro_panel.py
+    gopro_blur.py
     share/applications/gopro-panel.desktop
     install.sh
     README.md

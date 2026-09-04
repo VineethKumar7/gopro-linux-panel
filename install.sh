@@ -29,7 +29,7 @@ if [ "${EUID:-$(id -u)}" -eq 0 ]; then
 fi
 
 if [ "${1:-}" = "--uninstall" ]; then
-  rm -f "$BIN_DIR/gopro-cam" "$BIN_DIR/gopro-panel"
+  rm -f "$BIN_DIR/gopro-cam" "$BIN_DIR/gopro-panel"   # the venv goes with $DATA_DIR below
   rm -rf "$DATA_DIR/gopro-panel"
   rm -f "$DATA_DIR/applications/gopro-panel.desktop"
   sudo rm -f "$SBIN"
@@ -68,6 +68,7 @@ sudo install -D -m 0755 "$HERE/gopro" "$SBIN"
 install -D -m 0755 "$HERE/bin/gopro-cam"   "$BIN_DIR/gopro-cam"
 install -D -m 0755 "$HERE/bin/gopro-panel" "$BIN_DIR/gopro-panel"
 install -D -m 0644 "$HERE/gopro_panel.py"  "$DATA_DIR/gopro-panel/gopro_panel.py"
+install -D -m 0644 "$HERE/gopro_blur.py"   "$DATA_DIR/gopro-panel/gopro_blur.py"
 # Point the menu entry at the absolute path: a desktop launcher does not
 # necessarily inherit a shell PATH that includes ~/.local/bin.
 install -D -m 0644 "$HERE/share/applications/gopro-panel.desktop" \
@@ -75,6 +76,31 @@ install -D -m 0644 "$HERE/share/applications/gopro-panel.desktop" \
 sed -i "s|^Exec=.*|Exec=$BIN_DIR/gopro-panel|" "$DATA_DIR/applications/gopro-panel.desktop"
 command -v update-desktop-database >/dev/null && \
   update-desktop-database "$DATA_DIR/applications" 2>/dev/null || true
+
+# ------------------------------------------------------------- background blur
+# mediapipe is a large dependency and only the blur path needs it, so it gets
+# its own venv rather than a place in the system's Python packages. Skip this
+# and everything else still works -- you just cannot turn blur on.
+VENV=$DATA_DIR/gopro-panel/venv
+if [ "${GOPRO_SKIP_BLUR:-0}" = "1" ]; then
+  dim "Skipping the background-blur venv (GOPRO_SKIP_BLUR=1)."
+elif [ -x "$VENV/bin/python" ]; then
+  dim "Background-blur venv already present at $VENV"
+else
+  echo
+  echo "Background blur needs mediapipe in its own venv (~1 GB, one download)."
+  read -r -p "Set it up now? [Y/n] " reply
+  if [ "$reply" = "n" ] || [ "$reply" = "N" ]; then
+    dim "Skipped. Re-run install.sh later to add it."
+  elif ! python3 -m venv "$VENV" 2>/dev/null; then
+    red "Could not create the venv — install python3-venv and re-run."
+  elif ! "$VENV/bin/pip" install -q "mediapipe==0.10.21"; then
+    red "mediapipe failed to install; blur will stay unavailable."
+    rm -rf "$VENV"
+  else
+    green "Background blur ready."
+  fi
+fi
 
 if [ ! -f "$CONFIG_DIR/config" ]; then
   install -d "$CONFIG_DIR"
@@ -84,6 +110,9 @@ VIDEO_NR=42
 FOV=linear
 RESOLUTION=1080
 DEST_DIR=~/Videos/GoPro
+# Blur the background before the video device sees it, and how hard (1-30).
+BLUR=off
+BLUR_STRENGTH=8
 # Substring of the PulseAudio source you use as a microphone. The camera's own
 # mic is not carried over USB, so this is only a reminder of which one to pick.
 # MIC_MATCH=fifine
