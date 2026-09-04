@@ -68,8 +68,11 @@ sudo install -D -m 0755 "$HERE/gopro" "$SBIN"
 install -D -m 0755 "$HERE/bin/gopro-cam"   "$BIN_DIR/gopro-cam"
 install -D -m 0755 "$HERE/bin/gopro-panel" "$BIN_DIR/gopro-panel"
 install -D -m 0644 "$HERE/gopro_panel.py"  "$DATA_DIR/gopro-panel/gopro_panel.py"
+# Point the menu entry at the absolute path: a desktop launcher does not
+# necessarily inherit a shell PATH that includes ~/.local/bin.
 install -D -m 0644 "$HERE/share/applications/gopro-panel.desktop" \
                    "$DATA_DIR/applications/gopro-panel.desktop"
+sed -i "s|^Exec=.*|Exec=$BIN_DIR/gopro-panel|" "$DATA_DIR/applications/gopro-panel.desktop"
 command -v update-desktop-database >/dev/null && \
   update-desktop-database "$DATA_DIR/applications" 2>/dev/null || true
 
