@@ -30,6 +30,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, GLib, GdkPixbuf, GObject, Pango
 
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -206,6 +207,17 @@ class CameraLink:
 
     def set_fov(self, fov_id):
         return self._get(f"/gp/gpWebcam/SETTINGS?fov={fov_id}").json()
+
+    def webcam_off(self):
+        """End the stream and leave webcam mode; returns the camera's status.
+
+        Without this the camera keeps streaming to nobody with its recording
+        light on, however thoroughly this end is torn down. 2 = streaming,
+        1 = in webcam mode but idle, 0 = out of it.
+        """
+        self._get("/gp/gpWebcam/STOP")
+        self._get("/gopro/webcam/exit")
+        return self._get("/gopro/webcam/status").json().get("status")
 
     def delete(self, folder, name):
         return self._get(f"/gopro/media/delete/file?path={folder}/{name}", timeout=20)
@@ -448,18 +460,37 @@ class GoProPanel(Gtk.Window):
         self._spawn(stream)
 
     def _stop_webcam(self):
+        """Stop the camera first, then this end.
+
+        The camera half needs no root, so it runs here rather than inside the
+        pkexec'd script: cancel the password prompt and the light still goes out.
+        """
         self._set_webcam_buttons_sensitive(False)
         if self.worker and self.worker.poll() is None:
             self.worker.terminate()
         self.worker = None
+
+        def tell_camera():
+            try:
+                state = self.cam.webcam_off()
+                GLib.idle_add(self._append_log,
+                              "camera left webcam mode\n" if state == 0 else
+                              f"camera still reports webcam status {state}\n")
+            except Exception as e:
+                GLib.idle_add(self._append_log, f"could not reach the camera: {e}\n")
+        threading.Thread(target=tell_camera, daemon=True).start()
+
         self._spawn(["pkexec", str(GOPRO_CAM), "stop"], then=lambda: None)
-        GLib.timeout_add(1500, self._set_webcam_buttons_sensitive, True)
+        GLib.timeout_add(2000, self._set_webcam_buttons_sensitive, True)
 
     def _set_webcam_buttons_sensitive(self, on):
         self.btn_start.set_sensitive(on)
         self.btn_stop.set_sensitive(on)
 
+    ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
     def _append_log(self, text):
+        text = self.ANSI.sub("", text)          # gopro-cam colours its output
         buf = self.log.get_buffer()
         buf.insert(buf.get_end_iter(), text)
         self.log.scroll_to_iter(buf.get_end_iter(), 0.0, False, 0, 0)

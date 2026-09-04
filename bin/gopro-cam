@@ -37,7 +37,16 @@
 # SPDX-License-Identifier: MIT
 set -uo pipefail
 
-CONFIG=${GOPRO_PANEL_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/gopro-panel/config}
+# Who this is really being run for. pkexec and sudo hand us root with root's
+# $HOME and no XDG_RUNTIME_DIR, so `setup` and `stop` would otherwise read
+# /root/.config and look for the worker's pidfile in /run/user/0.
+OWNER_UID=${PKEXEC_UID:-${SUDO_UID:-$(id -u)}}
+OWNER_HOME=$(getent passwd "$OWNER_UID" | cut -d: -f6)
+: "${OWNER_HOME:=$HOME}"
+RUNTIME_BASE=/run/user/$OWNER_UID
+[ -d "$RUNTIME_BASE" ] || RUNTIME_BASE=${XDG_RUNTIME_DIR:-/tmp}
+
+CONFIG=${GOPRO_PANEL_CONFIG:-${XDG_CONFIG_HOME:-$OWNER_HOME/.config}/gopro-panel/config}
 # shellcheck disable=SC1090
 [ -r "$CONFIG" ] && . "$CONFIG"
 
@@ -50,7 +59,7 @@ BLUR=${BLUR:-off}
 BLUR_STRENGTH=${BLUR_STRENGTH:-8}
 
 SELF_DIR=$(dirname "$(readlink -f "$0")")
-DATA_DIR=${XDG_DATA_HOME:-$HOME/.local/share}
+DATA_DIR=${XDG_DATA_HOME:-$OWNER_HOME/.local/share}
 
 # Find the upstream script: next to us in a clone, installed, or pointed at by
 # $GOPRO_SCRIPT. Resolving it from our own path (not $HOME) matters because
@@ -72,7 +81,7 @@ done
 PYTHON=python3
 [ -x "$DATA_DIR/gopro-panel/venv/bin/python" ] && PYTHON=$DATA_DIR/gopro-panel/venv/bin/python
 
-RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/gopro-panel
+RUNTIME_DIR=$RUNTIME_BASE/gopro-panel
 PIDFILE=$RUNTIME_DIR/worker.pid
 
 # The worker's pid, and only if that pid really is the worker. Matching on the
@@ -86,9 +95,21 @@ worker_pid() {
   echo "$pid"
 }
 
+as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi; }
+
 red()   { printf '\033[0;31m%s\033[0m\n' "$*"; }
 green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
 dim()   { printf '\033[0;90m%s\033[0m\n' "$*"; }
+
+# The camera hands us a /24 over USB ethernet and answers on .51 of it.
+camera_ip() {
+  ip -4 -oneline addr 2>/dev/null | awk '
+    $2 ~ /^enx/ {
+      for (i = 1; i < NF; i++)
+        if ($i == "inet") { split($(i+1), a, "/"); split(a[1], o, "."); 
+                            print o[1] "." o[2] "." o[3] ".51"; exit }
+    }'
+}
 
 mic_source() {
   [ -n "$MIC_MATCH" ] || return 0
@@ -139,7 +160,7 @@ do_setup() {
   # and --video-number the short flag -n, and --non-interactive is matched first,
   # so "-n 42" silently means "non-interactive" and leaves 42 as a stray argument.
   green "Starting webcam mode -> $DEV"
-  sudo "$GOPRO_BIN" webcam -p enx -n -r "$RES" -f "$VIEW" --video-number "$VIDEO_NR"
+  as_root "$GOPRO_BIN" webcam -p enx -n -r "$RES" -f "$VIEW" --video-number "$VIDEO_NR"
 }
 
 do_stream() {
@@ -157,11 +178,35 @@ setup)  do_setup ;;
 stream) do_stream ;;
 start)  do_setup && do_stream ;;
 stop)
+  # Tearing down this end is not enough: left alone the camera stays in webcam
+  # mode, streaming to nobody, with its recording light on until the battery
+  # goes. STOP ends the stream, exit leaves webcam mode. Plain HTTP, no root.
+  ip=$(camera_ip)
+  if [ -n "$ip" ]; then
+    curl -s -m 5 "http://$ip/gp/gpWebcam/STOP"   >/dev/null 2>&1
+    curl -s -m 5 "http://$ip/gopro/webcam/exit"  >/dev/null 2>&1
+    state=$(curl -s -m 5 "http://$ip/gopro/webcam/status" 2>/dev/null \
+            | grep -o '"status"[^,}]*' | grep -o '[0-9]*$')
+    case "${state:-}" in
+      0) green "Camera left webcam mode." ;;
+      "") dim "Camera did not answer — it may already be unplugged." ;;
+      *) red "Camera still reports webcam status $state; unplug it if the light stays on." ;;
+    esac
+  else
+    dim "No camera interface found; skipping the camera half."
+  fi
+
   pid=$(worker_pid) && kill "$pid" 2>/dev/null
-  sudo pkill -f "v4l2 $DEV" 2>/dev/null
-  sudo pkill -f "gopro webcam" 2>/dev/null
-  sudo modprobe -rf v4l2loopback 2>/dev/null
-  green "Stopped."
+  as_root pkill -f "v4l2 $DEV" 2>/dev/null
+  as_root pkill -f "gopro webcam" 2>/dev/null
+  sleep 0.5
+  as_root modprobe -rf v4l2loopback 2>/dev/null
+  if lsmod 2>/dev/null | grep -q '^v4l2loopback'; then
+    red "v4l2loopback would not unload — something still has $DEV open."
+    dim "  sudo fuser -v $DEV     # to see what"
+  else
+    green "Stopped."
+  fi
   ;;
 status)
   if [ -e "$DEV" ]; then green "video: $DEV is up"

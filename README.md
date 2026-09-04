@@ -246,6 +246,12 @@ installed. Re-run `./install.sh` and say yes to the venv.
 **"would not accept video — is something else already writing to it"** — an
 older ffmpeg still owns the loopback node. `gopro-cam stop`, then start again.
 
+**The camera's light stays on after stopping** — it is still in webcam mode.
+`gopro-cam stop` ends that too (`/gp/gpWebcam/STOP` then `/gopro/webcam/exit`),
+and so does the GUI's Stop, which does the camera half itself so that cancelling
+the password prompt still turns the light off. If the light survives both, the
+camera stopped answering: unplug it.
+
 **Only one video format is offered** (`YU12 1920x1080 @ 30fps`). That is what the
 loopback node is created with; it is not a bug.
 
