@@ -23,6 +23,11 @@ not part of the UI)*
 and see at a glance whether the video node is live, loaded-but-idle, or off.
 Changing the FOV while it is streaming applies immediately; no restart.
 
+**Preview** — the picture the video device is actually serving, blur and all,
+shown in the panel. It reads V4L2 directly at a downscaled 480x270 and 12 fps, so
+watching costs a fraction of what the stream does, and it works when GNOME's
+Camera app will not.
+
 **Background blur** — tick a box and the room behind you is blurred *before the
 video device*, so the browser, Meet, Zoom, OBS and anything else get an
 already-blurred camera. No extension, no Meet setting, nothing to turn on per
@@ -269,8 +274,8 @@ fails is streaming *through* PipeWire, and Snapshot segfaults rather than
 reporting it, which makes a working camera look broken.
 
 So don't judge the camera by that app. **Chrome, Firefox, Zoom, Meet and OBS read
-the device directly** and are unaffected. The panel's **Preview** button opens
-ffplay on the same device if you just want to see the picture.
+the device directly** and are unaffected. The panel's **Preview** button shows the picture
+inside the panel itself if you just want to see it.
 
 **GNOME's Camera app (Snapshot) or Cheese shows the built-in webcam instead** —
 those two take cameras from PipeWire rather than reading V4L2 themselves, and

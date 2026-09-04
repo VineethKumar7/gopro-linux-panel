@@ -32,6 +32,7 @@ from gi.repository import Gtk, GLib, GdkPixbuf, GObject, Pango
 import os
 import re
 import shutil
+import signal
 import subprocess
 import threading
 from datetime import datetime
@@ -44,6 +45,8 @@ IFACE_PREFIX = "enx"          # what the camera's USB ethernet calls itself
 CAMERA_HOST_OCTET = 51        # the camera answers on .51 of its own /24
 POLL_SECONDS = 4
 THUMB_W = 80                  # thumbnails keep their own aspect; only width is fixed
+PREVIEW_W, PREVIEW_H = 480, 270   # 16:9, and small enough to be nearly free
+PREVIEW_FPS = 12
 
 # The FOV names the camera's webcam settings endpoint understands, and its ids.
 FOVS = [("linear", 4), ("narrow", 2), ("wide", 0), ("superview", 3)]
@@ -275,6 +278,8 @@ class GoProPanel(Gtk.Window):
         self.files = []
         self.busy_with_transfer = False
         self.worker = None          # the gopro-cam stream child, when we started it
+        self.preview_proc = None
+        self.preview_stop = threading.Event()
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.add(outer)
@@ -377,12 +382,13 @@ class GoProPanel(Gtk.Window):
         self.btn_stop.connect("clicked", lambda _w: self._stop_webcam())
         btns.pack_start(self.btn_stop, False, False, 0)
 
-        btn_preview = Gtk.Button(label="Preview")
-        btn_preview.set_tooltip_text(
-            "Open the video device in ffplay — the same picture apps get. Reads "
-            "V4L2 directly, so it works when GNOME's Camera app will not.")
-        btn_preview.connect("clicked", lambda _w: self._preview())
-        btns.pack_start(btn_preview, False, False, 0)
+        self.btn_preview = Gtk.ToggleButton(label="Preview")
+        self.btn_preview.set_tooltip_text(
+            "Show the picture the video device is serving — the same bytes a "
+            "browser gets, blur included. Read from V4L2 directly, so it works "
+            "when GNOME's Camera app will not.")
+        self.btn_preview.connect("toggled", self._on_preview_toggled)
+        btns.pack_start(self.btn_preview, False, False, 0)
 
         btn_nudge = Gtk.Button(label="Rescan")
         btn_nudge.set_tooltip_text(
@@ -398,6 +404,16 @@ class GoProPanel(Gtk.Window):
         self.lbl_mic = Gtk.Label(xalign=0)
         self.lbl_mic.set_line_wrap(True)
         box.pack_start(self.lbl_mic, False, False, 0)
+
+        # The picture as the video device serves it -- the same bytes a browser
+        # gets, blur included. Read straight from V4L2, which is the one path
+        # that has been reliable here.
+        self.preview = Gtk.Image()
+        self.preview.set_size_request(PREVIEW_W, PREVIEW_H)
+        self.preview.set_halign(Gtk.Align.START)
+        self.preview.set_margin_top(4)
+        self.preview.set_no_show_all(True)
+        box.pack_start(self.preview, False, False, 0)
 
         box.pack_start(Gtk.Separator(), False, False, 2)
         self.log = Gtk.TextView(editable=False, monospace=True)
@@ -423,26 +439,84 @@ class GoProPanel(Gtk.Window):
                 GLib.idle_add(self._append_log, f"FOV change failed: {e}\n")
         threading.Thread(target=work, daemon=True).start()
 
-    def _preview(self):
-        """See the finished picture without trusting a camera app to show it.
+    def _on_preview_toggled(self, button):
+        """Show the finished picture in this window, not in another app.
 
         GNOME's Snapshot segfaults on a v4l2loopback node whatever format it is
-        given, which makes a working camera look broken. ffplay reads the device
-        directly, the same way browsers and Zoom do.
+        given (see tests/consumer-matrix.sh), which makes a working camera look
+        broken. Reading the device here settles the question in the one place
+        that already knows what the stream is supposed to be doing.
         """
-        if not shutil.which("ffplay"):
-            self._append_log("ffplay is not installed (apt install ffmpeg).\n")
+        if not button.get_active():
+            self._stop_preview()
             return
         if not webcam_state()[1]:
-            self._append_log("Nothing is feeding %s yet — start the webcam first.\n"
-                             % VIDEO_DEV)
+            self._append_log(f"Nothing is feeding {VIDEO_DEV} yet — "
+                             "start the webcam first.\n")
+            button.set_active(False)
             return
-        subprocess.Popen(
-            ["ffplay", "-hide_banner", "-loglevel", "error", "-f", "v4l2",
-             "-i", VIDEO_DEV, "-window_title", "GoPro preview"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
-        self._append_log("preview opened — close its window when done\n")
+        self.preview_stop.clear()
+        self.preview.show()
+        threading.Thread(target=self._preview_worker, daemon=True).start()
+
+    def _stop_preview(self):
+        """Make sure the reader is actually gone, not merely asked to go.
+
+        A plain terminate() left ffmpeg alive here -- it was still holding the
+        video device a minute later -- so signal the whole process group and
+        escalate rather than assume the first signal landed.
+        """
+        self.preview_stop.set()
+        proc, self.preview_proc = self.preview_proc, None
+        if proc and proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self._append_log("preview reader would not die\n")
+        self.preview.hide()
+
+    def _preview_worker(self):
+        # Downscaled and rate-limited on ffmpeg's side, so watching costs a
+        # fraction of what the stream itself does.
+        cmd = ["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "v4l2",
+               "-i", VIDEO_DEV,
+               "-vf", f"fps={PREVIEW_FPS},scale={PREVIEW_W}:{PREVIEW_H}",
+               "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+        frame_bytes = PREVIEW_W * PREVIEW_H * 3
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, bufsize=frame_bytes,
+                                    start_new_session=True)
+        except Exception as e:
+            GLib.idle_add(self._append_log, f"preview failed to start: {e}\n")
+            GLib.idle_add(self.btn_preview.set_active, False)
+            return
+        self.preview_proc = proc
+        while not self.preview_stop.is_set():
+            raw = proc.stdout.read(frame_bytes)
+            if not raw or len(raw) < frame_bytes:
+                break
+            GLib.idle_add(self._show_frame, raw)
+        if proc.poll() is None:
+            proc.terminate()
+        if not self.preview_stop.is_set():
+            GLib.idle_add(self._append_log, "preview ended — is the stream still up?\n")
+            GLib.idle_add(self.btn_preview.set_active, False)
+
+    def _show_frame(self, raw):
+        pixbuf = GdkPixbuf.Pixbuf.new_from_bytes(
+            GLib.Bytes.new(raw), GdkPixbuf.Colorspace.RGB, False, 8,
+            PREVIEW_W, PREVIEW_H, PREVIEW_W * 3)
+        self.preview.set_from_pixbuf(pixbuf)
+        return False
 
     def _on_blur_changed(self, _widget=None):
         """Write the live-settings file; the worker picks it up mid-stream."""
@@ -523,6 +597,7 @@ class GoProPanel(Gtk.Window):
         pkexec'd script: cancel the password prompt and the light still goes out.
         """
         self._set_webcam_buttons_sensitive(False)
+        self.btn_preview.set_active(False)
         subprocess.run(["systemctl", "--user", "stop", STREAM_UNIT], capture_output=True)
         if self.worker and self.worker.poll() is None:
             self.worker.terminate()
@@ -894,6 +969,7 @@ class GoProPanel(Gtk.Window):
         # same as wanting your camera switched off mid-call; Stop is.
         self.stop_event.set()
         self.cancel_download.set()
+        self._stop_preview()
         Gtk.main_quit()
 
 
