@@ -205,9 +205,19 @@ It installs:
 | `~/.local/share/gopro-panel/bin/cam-loopback` | creates the loopback node |
 | `~/.local/share/gopro-panel/venv` | mediapipe, for blur (optional) |
 | `~/.local/share/applications/gopro-panel.desktop` | app-menu entry |
+| `~/.local/share/applications/cam-panel.desktop` | app-menu entry |
+| `~/.local/share/icons/hicolor/scalable/apps/*.svg` | the two launcher icons |
 | `~/.config/gopro-panel/config` | settings, if you don't already have one |
 
 `./install.sh --uninstall` reverses all of that and leaves your config alone.
+
+Both entries carry their own icon — a blue action cam for the GoPro, a black
+mirrorless for the other — so the two stay distinguishable at dock size, and
+a `StartupWMClass` that matches the window each one opens. Without that last
+part GNOME treats a running panel as a different application from the launcher
+you pinned, and you get a second, nameless tile in the dash instead of the
+pinned one lighting up. To pin: open the panel, right-click its dock tile,
+*Pin to Dash*.
 
 You can also just run it out of the clone without installing:
 

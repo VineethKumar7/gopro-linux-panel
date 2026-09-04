@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="gpBody" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4a4f57"/>
+      <stop offset="1" stop-color="#23262b"/>
+    </linearGradient>
+    <radialGradient id="gpGlass" cx="0.35" cy="0.3" r="0.85">
+      <stop offset="0" stop-color="#6fd3ff"/>
+      <stop offset="0.55" stop-color="#1273b8"/>
+      <stop offset="1" stop-color="#06243d"/>
+    </radialGradient>
+  </defs>
+
+  <!-- action-cam body: the squarish HERO silhouette -->
+  <rect x="12" y="24" width="104" height="80" rx="16" fill="url(#gpBody)"/>
+  <rect x="12" y="24" width="104" height="80" rx="16" fill="none" stroke="#12141a" stroke-width="3"/>
+  <!-- the blue frame band GoPro is known for -->
+  <rect x="18.5" y="30.5" width="91" height="67" rx="11" fill="none" stroke="#2e8fd6" stroke-width="3"/>
+
+  <!-- lens, sitting left of centre like the real thing -->
+  <circle cx="52" cy="64" r="27" fill="#15181d"/>
+  <circle cx="52" cy="64" r="22" fill="url(#gpGlass)"/>
+  <circle cx="52" cy="64" r="22" fill="none" stroke="#0d1116" stroke-width="2"/>
+  <circle cx="52" cy="64" r="8.5" fill="#08243c" opacity="0.85"/>
+  <path d="M40 52a18 18 0 0 1 13-6" fill="none" stroke="#dff3ff" stroke-width="4"
+        stroke-linecap="round" opacity="0.75"/>
+
+  <!-- status window + recording LED on the right cheek -->
+  <rect x="88" y="50" width="18" height="13" rx="3" fill="#0f1216"/>
+  <circle cx="97" cy="78" r="6" fill="#ff3b30"/>
+  <circle cx="97" cy="78" r="6" fill="none" stroke="#7a1410" stroke-width="1.5"/>
+</svg>

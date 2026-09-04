@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="mlBody" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3c4149"/>
+      <stop offset="1" stop-color="#1d2025"/>
+    </linearGradient>
+    <linearGradient id="mlBarrel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5a616b"/>
+      <stop offset="1" stop-color="#2a2e34"/>
+    </linearGradient>
+    <radialGradient id="mlGlass" cx="0.35" cy="0.3" r="0.85">
+      <stop offset="0" stop-color="#c9a86a"/>
+      <stop offset="0.45" stop-color="#3f6f6a"/>
+      <stop offset="1" stop-color="#07171c"/>
+    </radialGradient>
+  </defs>
+
+  <!-- hot shoe + viewfinder hump: reads as "proper camera", not action cam -->
+  <rect x="46" y="14" width="30" height="10" rx="2.5" fill="#2a2e34"/>
+  <rect x="30" y="22" width="34" height="12" rx="4" fill="#2a2e34"/>
+
+  <!-- mirrorless body -->
+  <rect x="8" y="32" width="112" height="70" rx="13" fill="url(#mlBody)"/>
+  <rect x="8" y="32" width="112" height="70" rx="13" fill="none" stroke="#101317" stroke-width="3"/>
+  <!-- hand grip on the right flank -->
+  <path d="M96 34h11a13 13 0 0 1 13 13v42a13 13 0 0 1-13 13H96z" fill="#171a1f" opacity="0.55"/>
+
+  <!-- lens barrel, centred -->
+  <circle cx="60" cy="68" r="31" fill="url(#mlBarrel)"/>
+  <circle cx="60" cy="68" r="31" fill="none" stroke="#101317" stroke-width="3"/>
+  <circle cx="60" cy="68" r="23" fill="#14181c"/>
+  <circle cx="60" cy="68" r="19" fill="url(#mlGlass)"/>
+  <path d="M46 56a20 20 0 0 1 14-7" fill="none" stroke="#eaf6ff" stroke-width="4"
+        stroke-linecap="round" opacity="0.7"/>
+
+  <!-- orange record button, the Sony tell -->
+  <circle cx="106" cy="47" r="6.5" fill="#ff6a1f"/>
+  <circle cx="106" cy="47" r="6.5" fill="none" stroke="#7d2f08" stroke-width="1.5"/>
+  <!-- AF-assist lamp -->
+  <rect x="17" y="44" width="12" height="7" rx="2" fill="#0f1216"/>
+</svg>

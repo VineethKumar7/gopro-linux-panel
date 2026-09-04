@@ -33,6 +33,8 @@ if [ "${1:-}" = "--uninstall" ]; then
   rm -rf "$DATA_DIR/gopro-panel"
   rm -f "$DATA_DIR/applications/gopro-panel.desktop" \
         "$DATA_DIR/applications/cam-panel.desktop"
+  rm -f "$DATA_DIR/icons/hicolor/scalable/apps/gopro-panel.svg" \
+        "$DATA_DIR/icons/hicolor/scalable/apps/cam-panel.svg"
   sudo rm -f "$SBIN"
   green "Removed. Your config in $CONFIG_DIR was left alone."
   exit 0
@@ -83,6 +85,16 @@ install -D -m 0644 "$HERE/share/applications/cam-panel.desktop" \
 sed -i "s|^Exec=.*|Exec=$BIN_DIR/cam-panel|" "$DATA_DIR/applications/cam-panel.desktop"
 command -v update-desktop-database >/dev/null && \
   update-desktop-database "$DATA_DIR/applications" 2>/dev/null || true
+
+# The launcher icons. They go in the user's icon theme rather than being
+# referenced by path, because that is the only form a pinned dock entry keeps
+# across a reinstall.
+for icon in gopro-panel cam-panel; do
+  install -D -m 0644 "$HERE/share/icons/hicolor/scalable/apps/$icon.svg" \
+                     "$DATA_DIR/icons/hicolor/scalable/apps/$icon.svg"
+done
+command -v gtk-update-icon-cache >/dev/null && \
+  gtk-update-icon-cache -qtf "$DATA_DIR/icons/hicolor" 2>/dev/null || true
 
 # ------------------------------------------------------------- background blur
 # mediapipe is a large dependency and only the blur path needs it, so it gets

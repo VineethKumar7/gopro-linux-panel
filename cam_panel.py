@@ -20,7 +20,7 @@ SPDX-License-Identifier: MIT
 
 import gi
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, GLib, GdkPixbuf, Pango
+from gi.repository import Gtk, Gdk, GLib, GdkPixbuf, Pango
 
 import os
 import re
@@ -171,7 +171,7 @@ class CamPanel(Gtk.Window):
     def __init__(self):
         super().__init__(title="Camera Panel")
         self.set_default_size(760, 720)
-        self.set_icon_name("camera-web")
+        self.set_icon_name("cam-panel")
 
         self.cams = []
         self.stop_event = threading.Event()
@@ -537,7 +537,26 @@ class CamPanel(Gtk.Window):
         Gtk.main_quit()
 
 
+def _prepare_identity():
+    """Name the process so the shell can pin us, and find our own icon.
+
+    GNOME matches a window to its .desktop file through WM_CLASS, which GTK
+    takes from the program name -- left alone that would be "cam_panel.py", which
+    matches nothing.  The search path is only needed when running from a
+    clone; an installed copy finds the icon in the user's icon theme.
+    """
+    GLib.set_prgname("cam-panel")
+    Gdk.set_program_class("cam-panel")
+    for base in (Path(__file__).resolve().parent / "share" / "icons",
+                 Path(GLib.get_user_data_dir()) / "icons"):
+        if base.is_dir():
+            Gtk.IconTheme.get_default().append_search_path(str(base))
+    if not Gtk.IconTheme.get_default().has_icon("cam-panel"):
+        Gtk.Window.set_default_icon_name("camera-web")
+
+
 def main():
+    _prepare_identity()
     win = CamPanel()
     win.show_all()
     Gtk.main()

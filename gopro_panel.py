@@ -27,7 +27,7 @@ SPDX-License-Identifier: MIT
 
 import gi
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, GLib, GdkPixbuf, GObject, Pango
+from gi.repository import Gtk, Gdk, GLib, GdkPixbuf, GObject, Pango
 
 import os
 import re
@@ -270,7 +270,7 @@ class GoProPanel(Gtk.Window):
     def __init__(self):
         super().__init__(title="GoPro Panel")
         self.set_default_size(880, 660)
-        self.set_icon_name("camera-video")
+        self.set_icon_name("gopro-panel")
 
         self.cam = CameraLink()
         self.stop_event = threading.Event()
@@ -989,7 +989,26 @@ class GoProPanel(Gtk.Window):
         Gtk.main_quit()
 
 
+def _prepare_identity():
+    """Name the process so the shell can pin us, and find our own icon.
+
+    GNOME matches a window to its .desktop file through WM_CLASS, which GTK
+    takes from the program name -- left alone that would be "gopro_panel.py", which
+    matches nothing.  The search path is only needed when running from a
+    clone; an installed copy finds the icon in the user's icon theme.
+    """
+    GLib.set_prgname("gopro-panel")
+    Gdk.set_program_class("gopro-panel")
+    for base in (Path(__file__).resolve().parent / "share" / "icons",
+                 Path(GLib.get_user_data_dir()) / "icons"):
+        if base.is_dir():
+            Gtk.IconTheme.get_default().append_search_path(str(base))
+    if not Gtk.IconTheme.get_default().has_icon("gopro-panel"):
+        Gtk.Window.set_default_icon_name("camera-video")
+
+
 def main():
+    _prepare_identity()
     win = GoProPanel()
     win.show_all()
     win.btn_cancel.set_sensitive(False)
