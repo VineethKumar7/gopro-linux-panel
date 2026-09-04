@@ -14,6 +14,7 @@
 #   gopro-cam status
 #   gopro-cam setup [res] [fov]   just the root half: module + camera stream
 #   gopro-cam stream              just the user half: frames -> video device
+#   gopro-cam nudge               make PipeWire apps (GNOME Camera) notice it
 #
 #   --blur / --no-blur            override the configured background blur
 #   --strength N                  blur radius, 1-30
@@ -160,7 +161,41 @@ do_setup() {
   # and --video-number the short flag -n, and --non-interactive is matched first,
   # so "-n 42" silently means "non-interactive" and leaves 42 as a stray argument.
   green "Starting webcam mode -> $DEV"
-  as_root "$GOPRO_BIN" webcam -p enx -n -r "$RES" -f "$VIEW" --video-number "$VIDEO_NR"
+  as_root "$GOPRO_BIN" webcam -p enx -n -r "$RES" -f "$VIEW" --video-number "$VIDEO_NR" \
+    || return 1
+  relabel_device
+}
+
+# Upstream builds the module argument as card_label='GoPro'$N and runs it
+# unquoted, so the module receives the quotes literally: the camera shows up as
+# 'GoPro'42, and PipeWire gives up and calls it "Unknown device". Reload with a
+# clean label. Nothing is attached to the node yet at this point, so the unload
+# is safe; if it is not, leave what upstream made rather than end up with none.
+relabel_device() {
+  [ "$(cat "/sys/class/video4linux/video$VIDEO_NR/name" 2>/dev/null)" = "GoPro" ] && return 0
+  as_root modprobe -rf v4l2loopback 2>/dev/null || {
+    dim "Left the device label as upstream set it (module busy)."; return 0; }
+  if ! as_root modprobe v4l2loopback exclusive_caps=1 card_label=GoPro \
+                video_nr="$VIDEO_NR" 2>/dev/null; then
+    red "Could not reload v4l2loopback — no video device. Run 'gopro-cam stop' and retry."
+    return 1
+  fi
+}
+
+# GNOME's Snapshot and Cheese take cameras from PipeWire rather than reading
+# V4L2 themselves, and PipeWire only registers a camera source if the node
+# advertised capture when it probed it. With exclusive_caps=1 -- which Chrome
+# insists on -- a loopback node is output-only until something feeds it, so a
+# node created before the stream started never becomes a source. Re-probing is
+# not exposed as an API; restarting WirePlumber is, and needs no root.
+do_nudge() {
+  if ! command -v systemctl >/dev/null; then
+    red "No systemctl here; restart your PipeWire session manually."
+    return 1
+  fi
+  systemctl --user restart wireplumber || return 1
+  green "WirePlumber restarted — PipeWire apps should list the GoPro now."
+  dim "Chrome, Firefox, Zoom and OBS read V4L2 directly and never needed this."
 }
 
 do_stream() {
@@ -176,6 +211,7 @@ do_stream() {
 case "$ACTION" in
 setup)  do_setup ;;
 stream) do_stream ;;
+nudge)  do_nudge ;;
 start)  do_setup && do_stream ;;
 stop)
   # Tearing down this end is not enough: left alone the camera stays in webcam

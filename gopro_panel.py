@@ -370,6 +370,16 @@ class GoProPanel(Gtk.Window):
         self.btn_stop = Gtk.Button(label="Stop")
         self.btn_stop.connect("clicked", lambda _w: self._stop_webcam())
         btns.pack_start(self.btn_stop, False, False, 0)
+
+        btn_nudge = Gtk.Button(label="Rescan")
+        btn_nudge.set_tooltip_text(
+            "GNOME's Camera app takes cameras from PipeWire, which only registers "
+            "one if the device looked like a camera when it last looked — and this "
+            "one does not until the stream is running. This makes it look again. "
+            "Chrome, Firefox and Zoom read the device directly and never need it.")
+        btn_nudge.connect("clicked", lambda _w: self._spawn(
+            [str(GOPRO_CAM), "nudge"], then=lambda: None))
+        btns.pack_end(btn_nudge, False, False, 0)
         box.pack_start(btns, False, False, 0)
 
         self.lbl_mic = Gtk.Label(xalign=0)

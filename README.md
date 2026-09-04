@@ -164,6 +164,7 @@ gopro-cam start 720 wide    # ... or override resolution and FOV
 gopro-cam start --blur      # ... with the background blurred
 gopro-cam status
 gopro-cam stop
+gopro-cam nudge             # make GNOME's Camera app notice the device
 ```
 
 `start` is two halves — `setup`, which loads the kernel module and asks the
@@ -239,6 +240,16 @@ If it doesn't, the DKMS build failed: check your kernel headers, and Secure Boot
 
 **Zoom/Firefox can't see the camera** — start the webcam before the app, or make
 the app rescan.
+
+**GNOME's Camera app (Snapshot) or Cheese shows the built-in webcam instead** —
+those two take cameras from PipeWire rather than reading V4L2 themselves, and
+PipeWire only registers a camera source if the device advertised *capture* when
+it probed it. With `exclusive_caps=1` — which Chrome insists on — a loopback node
+is output-only until something feeds it, so a node created before the stream
+started never becomes a PipeWire source. `gopro-cam nudge` (or the panel's
+**Rescan** button) restarts WirePlumber so it looks again; neither needs root.
+Chrome, Firefox, Zoom and OBS read the device directly and are unaffected — which
+is why video calls work even when the Camera app looks empty.
 
 **Blur is greyed out or the worker exits immediately** — mediapipe isn't
 installed. Re-run `./install.sh` and say yes to the venv.
