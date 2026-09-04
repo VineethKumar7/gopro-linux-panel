@@ -167,6 +167,10 @@ gopro-cam stop
 gopro-cam nudge             # make GNOME's Camera app notice the device
 ```
 
+Closing the panel window does **not** stop the camera. The GUI runs the stream
+as its own transient user service (`gopro-panel-stream`), so a webcam is not cut
+off mid-call by the window that happened to start it; Stop ends it.
+
 `start` is two halves — `setup`, which loads the kernel module and asks the
 camera to stream, and `stream`, which carries frames to the video device and
 holds the terminal. Only `setup` needs root, so the GUI elevates that one alone
@@ -240,6 +244,12 @@ If it doesn't, the DKMS build failed: check your kernel headers, and Secure Boot
 
 **Zoom/Firefox can't see the camera** — start the webcam before the app, or make
 the app rescan.
+
+**"Could not play camera stream", or the device lists no formats** — nothing is
+feeding it. `v4l2-ctl -d /dev/video42 --list-formats-ext` on a fed device shows
+`YU12 1920x1080 @ 30fps`; on an unfed one the list is empty and the device
+reports `Video Output` only, which is exactly what a consumer chokes on. Check
+`gopro-cam status`, and start the stream again.
 
 **GNOME's Camera app (Snapshot) or Cheese shows the built-in webcam instead** —
 those two take cameras from PipeWire rather than reading V4L2 themselves, and

@@ -120,6 +120,12 @@ def remember(**pairs):
         pass
 
 
+# The stream runs in its own transient service, not as a child of this window.
+# A webcam should outlive the panel that started it: closing the window, or the
+# panel being restarted, must not cut the camera in the middle of a call.
+STREAM_UNIT = "gopro-panel-stream"
+
+
 def find_gopro_cam():
     """Installed on PATH, or sitting next to us in a clone."""
     found = shutil.which("gopro-cam")
@@ -423,14 +429,15 @@ class GoProPanel(Gtk.Window):
             self._append_log(f"could not write {path}: {e}\n")
         remember(BLUR="on" if enabled else "off", BLUR_STRENGTH=strength)
 
-    def _spawn(self, cmd, then=None):
+    def _spawn(self, cmd, then=None, new_session=False):
         """Run a command, funnel its output into the log, don't block the UI."""
         self._append_log("$ %s\n" % " ".join(cmd))
 
         def work():
             try:
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                        stderr=subprocess.STDOUT, text=True)
+                                        stderr=subprocess.STDOUT, text=True,
+                                        start_new_session=new_session)
                 if then is None:
                     self.worker = proc
                 for line in proc.stdout:
@@ -467,7 +474,19 @@ class GoProPanel(Gtk.Window):
                   "--strength", str(int(self.adj_strength.get_value()))]
         stream.append("--blur" if self.chk_blur.get_active() else "--no-blur")
         self.btn_stop.set_sensitive(True)
-        self._spawn(stream)
+
+        if shutil.which("systemd-run"):
+            subprocess.run(["systemctl", "--user", "stop", STREAM_UNIT],
+                           capture_output=True)
+            self._spawn(["systemd-run", "--user", "--collect",
+                         f"--unit={STREAM_UNIT}"] + stream,
+                        then=lambda: self._append_log(
+                            "stream is its own service now — closing this window "
+                            "leaves the camera running; use Stop to end it\n"))
+        else:
+            # No systemd: at least leave our process group, so a signal to the
+            # panel does not take the stream with it.
+            self._spawn(stream, new_session=True)
 
     def _stop_webcam(self):
         """Stop the camera first, then this end.
@@ -476,6 +495,7 @@ class GoProPanel(Gtk.Window):
         pkexec'd script: cancel the password prompt and the light still goes out.
         """
         self._set_webcam_buttons_sensitive(False)
+        subprocess.run(["systemctl", "--user", "stop", STREAM_UNIT], capture_output=True)
         if self.worker and self.worker.poll() is None:
             self.worker.terminate()
         self.worker = None
@@ -842,10 +862,10 @@ class GoProPanel(Gtk.Window):
         return False
 
     def _on_destroy(self, _w):
+        # Deliberately leaves the stream alone. Closing the window is not the
+        # same as wanting your camera switched off mid-call; Stop is.
         self.stop_event.set()
         self.cancel_download.set()
-        if self.worker and self.worker.poll() is None:
-            self.worker.terminate()
         Gtk.main_quit()
 
 
