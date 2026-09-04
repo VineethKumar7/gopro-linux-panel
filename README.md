@@ -258,6 +258,14 @@ it probed it. With `exclusive_caps=1` — which Chrome insists on — a loopback
 is output-only until something feeds it, so a node created before the stream
 started never becomes a PipeWire source. `gopro-cam nudge` (or the panel's
 **Rescan** button) restarts WirePlumber so it looks again; neither needs root.
+
+**Order matters, and this is the part that wastes an afternoon.** WirePlumber
+decides whether a device is a camera at the moment it probes it. Nudge while the
+stream is *down* and you get a device with no camera source — which is exactly
+what "could not play camera stream" looks like from the app, so it reads as a
+broken camera rather than a missing one. `nudge` therefore refuses to run unless
+the node is actually being fed, and confirms a source appeared afterwards instead
+of assuming it did.
 Chrome, Firefox, Zoom and OBS read the device directly and are unaffected — which
 is why video calls work even when the Camera app looks empty.
 

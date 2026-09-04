@@ -188,13 +188,55 @@ relabel_device() {
 # insists on -- a loopback node is output-only until something feeds it, so a
 # node created before the stream started never becomes a source. Re-probing is
 # not exposed as an API; restarting WirePlumber is, and needs no root.
+# Whether a PipeWire camera source exists for our node. Written in Python
+# because pw-dump emits several JSON documents in one go and grepping it is a
+# good way to be confidently wrong.
+pipewire_has_source() {
+  command -v pw-dump >/dev/null || return 2
+  pw-dump 2>/dev/null | python3 -c '
+import sys, json
+txt = sys.stdin.read(); dec = json.JSONDecoder(); i = 0; objs = []
+while i < len(txt):
+    while i < len(txt) and txt[i].isspace(): i += 1
+    if i >= len(txt): break
+    val, i = dec.raw_decode(txt, i)
+    objs.extend(val if isinstance(val, list) else [val])
+want = sys.argv[1]
+for o in objs:
+    p = ((o.get("info") or {}).get("props") or {})
+    if p.get("api.v4l2.path") == want and str(p.get("media.class", "")).startswith("Video/Source"):
+        raise SystemExit(0)
+raise SystemExit(1)
+' "$DEV"
+}
+
 do_nudge() {
   if ! command -v systemctl >/dev/null; then
     red "No systemctl here; restart your PipeWire session manually."
     return 1
   fi
+  # Order is everything. WirePlumber decides whether a device is a camera at
+  # the moment it probes it, and an unfed loopback node is not one -- it has no
+  # capture capability and enumerates no formats. Nudging while the stream is
+  # down produces a device with no source, which is what "could not play camera
+  # stream" looks like from the app.
+  if ! v4l2-ctl -d "$DEV" --list-formats-ext 2>/dev/null | grep -q Discrete; then
+    red "$DEV is not being fed, so there is nothing for PipeWire to find."
+    dim "Start the stream first ('gopro-cam start'), then nudge."
+    return 1
+  fi
   systemctl --user restart wireplumber || return 1
-  green "WirePlumber restarted — PipeWire apps should list the GoPro now."
+
+  local tries=0
+  until pipewire_has_source; do
+    case $? in 2) dim "pw-dump not installed; cannot confirm."; return 0 ;; esac
+    tries=$((tries + 1))
+    [ $tries -ge 12 ] && { red "PipeWire still lists no camera source for $DEV."
+                           dim "Try again, or use a browser — those read V4L2 directly."
+                           return 1; }
+    sleep 1
+  done
+  green "PipeWire now has a camera source for $DEV."
   dim "Chrome, Firefox, Zoom and OBS read V4L2 directly and never needed this."
 }
 
