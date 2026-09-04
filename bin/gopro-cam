@@ -241,6 +241,16 @@ do_nudge() {
 }
 
 do_stream() {
+  # Restarting quickly races the previous run: systemd has returned but its
+  # ffmpeg may still hold UDP 8554 for a moment, and a decoder that cannot bind
+  # exits silently.
+  local waited=0
+  while ss -uan 2>/dev/null | grep -q ":8554 "; do
+    waited=$((waited + 1))
+    [ $waited -ge 10 ] && { red "UDP 8554 is still in use; something else is reading the camera."
+                            exit 1; }
+    sleep 1
+  done
   if [ -z "$BLUR_PY" ]; then
     red "gopro_blur.py is missing — run install.sh, or stream from a clone."
     exit 1

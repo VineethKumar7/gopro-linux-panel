@@ -81,10 +81,25 @@ still works — the checkbox just won't have anything behind it.
 ffmpeg line takes the camera's UDP stream with a 50 MB receive buffer, which is
 right for a pipeline that always keeps up and a latency bomb for one that
 doesn't: the backlog is queued rather than dropped, so the picture falls further
-behind real life for as long as the stream runs, and never recovers. The worker
-uses a 1 MB buffer and, before every frame, discards whatever has piled up in the
-decoder's pipe except the newest frame. Latency stays bounded whatever the frame
-rate, and if it is skipping a lot it says so instead of quietly drifting.
+behind real life for as long as the stream runs, and never recovers.
+
+Dropping cannot be done by peeking at the pipe, either — a pipe holds 64 KB and
+a 1080p frame is 6 MB, so there is never a spare frame in it to discard; the
+backlog collects *inside* ffmpeg where nothing outside can reach it. So a reader
+thread drains the decoder as fast as it will go, keeping only the newest frame
+for the processing loop. ffmpeg is never allowed to fall behind, and everything
+older than the current frame is dropped on purpose.
+
+The worker reports its own contribution every ten seconds — how long a frame
+waits between leaving the decoder and being written out, which is the only part
+of the delay it controls:
+
+```
+[gopro-blur] 30 fps out, 0 skipped, added delay 3 ms (p95 4 ms)
+```
+
+If that number is small and the picture still lags, the delay is the camera's own
+encoding and the decode of its stream, not this.
 
 **Speed.** The mask is computed on a small copy of each frame and feathered
 while it is still small; the blur is a downscale, a blur and an upscale. The

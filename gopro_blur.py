@@ -19,13 +19,11 @@ SPDX-License-Identifier: MIT
 """
 
 import argparse
-import fcntl
 import os
 import signal
-import struct
 import subprocess
 import sys
-import termios
+import threading
 import time
 from pathlib import Path
 
@@ -161,27 +159,60 @@ def read_exactly(stream, count):
     return bytes(chunks)
 
 
-def drop_backlog(stream, frame_bytes):
-    """Throw away every frame but the newest one waiting in the pipe.
+class LatestFrame:
+    """A one-slot mailbox: a new frame replaces the one nobody collected.
 
-    This is a live camera, so a frame we were too slow to reach is worthless --
-    what matters is that the one we do process is recent. Without this the
-    decoder simply queues ahead of us and the picture drifts further behind real
-    life for as long as the stream runs: it looks like lag, it grows, and it
-    never recovers. Returns how many frames were discarded.
+    Dropping cannot be done by peeking at the pipe. A pipe holds 64 KB and a
+    1080p frame is 6 MB, so there is never a spare frame sitting in it to
+    discard -- the backlog builds up *inside* ffmpeg, in its receive buffer and
+    internal queues, where nothing outside can reach it. The cure is to never
+    let it build: a thread reads the decoder as fast as it will go, so ffmpeg is
+    always drained, and keeps only the newest frame for the processing loop.
+    Everything older is dropped here, deliberately, because on a live camera an
+    old frame is not worth the time it takes to blur it.
     """
-    dropped = 0
-    try:
-        fd = stream.fileno()
-        while True:
-            pending = struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, b"\0" * 4))[0]
-            if pending < 2 * frame_bytes:      # leave the newest whole frame
-                return dropped
-            if read_exactly(stream, frame_bytes) is None:
-                return dropped
-            dropped += 1
-    except OSError:
-        return dropped
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.data = None
+        self.arrived = threading.Event()
+        self.dropped = 0
+        self.eof = False
+
+    def put(self, data):
+        with self.lock:
+            if self.data is not None:
+                self.dropped += 1
+            self.data = (data, time.time())
+        self.arrived.set()
+
+    def finish(self):
+        self.eof = True
+        self.arrived.set()
+
+    def take(self, timeout=5.0):
+        """Returns (frame, when it was read off the decoder), or None."""
+        if not self.arrived.wait(timeout):
+            return None
+        with self.lock:
+            item, self.data = self.data, None
+            if item is None and not self.eof:
+                self.arrived.clear()
+        return item
+
+    def drain_count(self):
+        with self.lock:
+            n, self.dropped = self.dropped, 0
+        return n
+
+
+def drain_decoder(stream, frame_bytes, mailbox, stop):
+    while not stop.is_set():
+        raw = read_exactly(stream, frame_bytes)
+        if raw is None:
+            break
+        mailbox.put(raw)
+    mailbox.finish()
 
 
 def main():
@@ -213,7 +244,9 @@ def main():
     # EOF here anyway. The encoder stays at "error", because that is where a
     # real problem -- the video device being taken -- actually surfaces.
     decoder = subprocess.Popen(
-        ["ffmpeg", "-nostdin", "-loglevel", "fatal", "-fflags", "nobuffer",
+        ["ffmpeg", "-nostdin", "-loglevel", "fatal",
+         "-fflags", "nobuffer", "-flags", "low_delay",
+         "-probesize", "100000", "-analyzeduration", "0",
          "-f", "mpegts", "-i", url,
          "-vf", f"scale={width}:{height}", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
         stdout=subprocess.PIPE, bufsize=frame_bytes)
@@ -224,9 +257,19 @@ def main():
          "-f", "v4l2", "-pix_fmt", "yuv420p", args.device],
         stdin=subprocess.PIPE)
 
+    # A decoder that cannot bind UDP 8554 -- because the previous run's has not
+    # died yet -- exits at once and silently, and the only symptom is an
+    # immediate "the camera stream ended". Say what actually happened.
+    time.sleep(1.2)
+    if decoder.poll() is not None:
+        log(f"could not read the camera stream on UDP {args.port} — something "
+            f"else is still bound to it. Wait a moment and start again.")
+        if encoder.poll() is None:
+            encoder.terminate()
+        return 1
+
     # ffmpeg gives up on a busy loopback node straight away, and the only clue
     # otherwise is a broken pipe on the first frame.
-    time.sleep(1.2)
     if encoder.poll() is not None:
         log(f"{args.device} would not accept video — is something else already "
             f"writing to it? Try `gopro-cam stop` first.")
@@ -255,17 +298,27 @@ def main():
     signal.signal(signal.SIGINT, handle)
     signal.signal(signal.SIGTERM, handle)
 
-    frames, slow_frames, dropped, since = 0, 0, 0, time.time()
+    mailbox = LatestFrame()
+    reader_stop = threading.Event()
+    reader = threading.Thread(target=drain_decoder,
+                              args=(decoder.stdout, frame_bytes, mailbox, reader_stop),
+                              daemon=True)
+    reader.start()
+
+    frames, slow_frames, dropped, since, ages = 0, 0, 0, time.time(), []
     budget = 1.0 / args.fps
     status = 0
     try:
         while not stop:
-            dropped += drop_backlog(decoder.stdout, frame_bytes)
-            raw = read_exactly(decoder.stdout, frame_bytes)
-            if raw is None:
-                log("the camera stream ended")
-                status = 1
-                break
+            item = mailbox.take()
+            dropped += mailbox.drain_count()
+            if item is None:
+                if mailbox.eof:
+                    log("the camera stream ended")
+                    status = 1
+                    break
+                continue
+            raw, arrived_at = item
             control.reload()
             if control.enabled:
                 started = time.time()
@@ -292,13 +345,19 @@ def main():
                 break
 
             frames += 1
+            ages.append(time.time() - arrived_at)
             if time.time() - since >= 10:
-                if dropped > frames * 0.2:
-                    log(f"{frames / 10:.0f} fps out, {dropped} frames skipped in 10s to "
-                        f"stay current. It stays live either way; drop the resolution "
-                        f"or --seg-width for a smoother picture.")
-                frames, slow_frames, dropped, since = 0, 0, 0, time.time()
+                # Age is how long a frame waited here between leaving the
+                # decoder and being written out: our share of the delay, and the
+                # only share we can do anything about.
+                ages.sort()
+                worst = ages[int(len(ages) * 0.95)] if ages else 0.0
+                log(f"{frames / 10:.0f} fps out, {dropped} skipped, "
+                    f"added delay {ages[len(ages) // 2] * 1000:.0f} ms "
+                    f"(p95 {worst * 1000:.0f} ms)" if ages else "no frames")
+                frames, slow_frames, dropped, since, ages = 0, 0, 0, time.time(), []
     finally:
+        reader_stop.set()
         for proc in (decoder, encoder):
             if proc.poll() is None:
                 proc.terminate()
