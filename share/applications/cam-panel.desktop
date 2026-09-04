@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Camera Panel
+Comment=Preview any USB camera and publish a background-blurred copy
+Exec=cam-panel
+Icon=camera-web
+Terminal=false
+Categories=AudioVideo;Video;Utility;
+StartupNotify=true

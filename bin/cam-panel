@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Launcher for cam_panel.py — works from a clone and from an install.
+# SPDX-License-Identifier: MIT
+set -euo pipefail
+
+SELF_DIR=$(dirname "$(readlink -f "$0")")
+for candidate in "$SELF_DIR/../cam_panel.py" \
+                 "${XDG_DATA_HOME:-$HOME/.local/share}/gopro-panel/cam_panel.py" \
+                 /usr/local/share/gopro-panel/cam_panel.py; do
+  if [ -f "$candidate" ]; then
+    exec python3 "$candidate" "$@"
+  fi
+done
+echo "cam-panel: cannot find cam_panel.py" >&2
+exit 1

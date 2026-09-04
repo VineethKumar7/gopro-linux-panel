@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Make sure a v4l2loopback node exists, so a blurred copy of a camera has
+# somewhere to go. Root only, because loading a kernel module is.
+#
+#   cam-loopback ensure <video_nr> <label>
+#   cam-loopback remove <video_nr>
+#
+# v4l2loopback here has no way to add a device to an already-loaded module
+# (that needs v4l2loopback-ctl, which Ubuntu does not ship), so adding a second
+# node means reloading with both numbers. Anything currently streaming through
+# an existing node will stop when that happens, which is why `ensure` does
+# nothing at all when the node it was asked for is already there.
+#
+# SPDX-License-Identifier: MIT
+set -uo pipefail
+
+red()   { printf '\033[0;31m%s\033[0m\n' "$*"; }
+green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
+
+[ "$(id -u)" -eq 0 ] || { red "cam-loopback must run as root."; exit 1; }
+
+existing_numbers() {
+  local n
+  for n in /sys/devices/virtual/video4linux/video*; do
+    [ -e "$n" ] || continue
+    basename "$n" | sed 's/video//'
+  done
+}
+
+case "${1:-}" in
+ensure)
+  NR=${2:?video number}; LABEL=${3:-Camera}
+  if [ -e "/dev/video$NR" ]; then
+    green "/dev/video$NR already exists."
+    exit 0
+  fi
+  if ! modinfo v4l2loopback >/dev/null 2>&1; then
+    red "v4l2loopback is not installed (apt install v4l2loopback-dkms)."
+    exit 1
+  fi
+  NUMBERS=$NR
+  LABELS=$LABEL
+  if lsmod | grep -q '^v4l2loopback'; then
+    # Carry the nodes that are already there across the reload.
+    for n in $(existing_numbers); do
+      NUMBERS="$NUMBERS,$n"
+      LABELS="$LABELS,$(cat "/sys/class/video4linux/video$n/name" 2>/dev/null || echo Camera)"
+    done
+    modprobe -rf v4l2loopback 2>/dev/null || {
+      red "v4l2loopback is busy; stop whatever is using it and try again."; exit 1; }
+  fi
+  # exclusive_caps=1 for every node: Chrome refuses a device that claims both
+  # capture and output.
+  CAPS=$(echo "$NUMBERS" | awk -F, '{for(i=1;i<=NF;i++) printf (i>1?",1":"1")}')
+  if modprobe v4l2loopback video_nr="$NUMBERS" card_label="$LABELS" exclusive_caps="$CAPS"; then
+    green "/dev/video$NR ready ($LABEL)."
+  else
+    red "Could not load v4l2loopback."
+    exit 1
+  fi
+  ;;
+remove)
+  NR=${2:?video number}
+  [ -e "/dev/video$NR" ] || { green "/dev/video$NR is already gone."; exit 0; }
+  modprobe -rf v4l2loopback 2>/dev/null && green "Removed." || {
+    red "v4l2loopback would not unload — something still has a node open."; exit 1; }
+  ;;
+*)
+  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  ;;
+esac

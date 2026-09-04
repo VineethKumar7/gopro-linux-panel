@@ -149,6 +149,15 @@ class Compositor:
         return cv2.convertScaleAbs(cv2.add(fore, back), alpha=1.0 / 255.0).get()
 
 
+def device_refused(device):
+    """Two different problems that look identical from ffmpeg's side."""
+    if not os.path.exists(device):
+        return (f"{device} does not exist — the loopback node has to be created "
+                f"before anything can be written to it.")
+    return (f"{device} would not accept video — something else is already "
+            f"writing to it. Stop that first.")
+
+
 def read_exactly(stream, count):
     chunks = bytearray()
     while len(chunks) < count:
@@ -217,9 +226,13 @@ def drain_decoder(stream, frame_bytes, mailbox, stop):
 
 def main():
     ap = argparse.ArgumentParser(description="Blur the background before the video device sees it.")
-    ap.add_argument("--device", default="/dev/video42")
+    ap.add_argument("--device", default="/dev/video42", help="loopback node to write")
     ap.add_argument("--resolution", default="720", choices=sorted(FRAME_SIZES))
     ap.add_argument("--port", type=int, default=8554)
+    ap.add_argument("--source", default=None,
+                    help="where frames come from: 'udp:8554' (a GoPro in webcam "
+                         "mode, the default) or 'v4l2:/dev/videoN' (any ordinary "
+                         "camera, e.g. a Sony that is already a UVC device)")
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--strength", type=int, default=8, help="blur radius, 1-30")
     ap.add_argument("--seg-width", type=int, default=384, help="width the mask is computed at")
@@ -238,6 +251,18 @@ def main():
     # out a hiccup and no more.
     url = (f"udp://@0.0.0.0:{args.port}"
            f"?overrun_nonfatal=1&fifo_size=1000000&timeout=15000000")
+    # Where the frames come from is the only camera-specific part of this. A
+    # GoPro has to be talked into streaming MPEG-TS over USB ethernet; anything
+    # that is already a UVC device is just a file to read.
+    source = args.source or f"udp:{args.port}"
+    if source.startswith("v4l2:"):
+        input_args = ["-f", "v4l2", "-i", source[len("v4l2:"):]]
+        from_udp = False
+    else:
+        input_args = ["-probesize", "100000", "-analyzeduration", "0",
+                      "-f", "mpegts", "-i", url]
+        from_udp = True
+
     # The decoder is deliberately quiet: joining a live stream mid-GOP always
     # produces a burst of "non-existing PPS" complaints that mean nothing, and
     # they would drown the GUI's log. A stream that never arrives shows up as
@@ -245,10 +270,8 @@ def main():
     # real problem -- the video device being taken -- actually surfaces.
     decoder = subprocess.Popen(
         ["ffmpeg", "-nostdin", "-loglevel", "fatal",
-         "-fflags", "nobuffer", "-flags", "low_delay",
-         "-probesize", "100000", "-analyzeduration", "0",
-         "-f", "mpegts", "-i", url,
-         "-vf", f"scale={width}:{height}", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
+         "-fflags", "nobuffer", "-flags", "low_delay"] + input_args +
+        ["-vf", f"scale={width}:{height}", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
         stdout=subprocess.PIPE, bufsize=frame_bytes)
     encoder = subprocess.Popen(
         ["ffmpeg", "-nostdin", "-loglevel", "error",
@@ -263,7 +286,9 @@ def main():
     time.sleep(1.2)
     if decoder.poll() is not None:
         log(f"could not read the camera stream on UDP {args.port} — something "
-            f"else is still bound to it. Wait a moment and start again.")
+            f"else is still bound to it. Wait a moment and start again."
+            if from_udp else
+            f"could not read {source[len('v4l2:'):]} — is another program using it?")
         if encoder.poll() is None:
             encoder.terminate()
         return 1
@@ -271,8 +296,7 @@ def main():
     # ffmpeg gives up on a busy loopback node straight away, and the only clue
     # otherwise is a broken pipe on the first frame.
     if encoder.poll() is not None:
-        log(f"{args.device} would not accept video — is something else already "
-            f"writing to it? Try `gopro-cam stop` first.")
+        log(device_refused(args.device))
         decoder.terminate()
         return 1
 
@@ -288,7 +312,7 @@ def main():
                             use_opencl=(args.opencl != "off"))
     if args.opencl == "on" and not compositor.use_opencl:
         log("OpenCL was asked for but is not available; using the CPU path")
-    log(f"{compositor.describe()} -> {args.device}")
+    log(f"{source} -> {compositor.describe()} -> {args.device}")
 
     stop = False
 
@@ -337,8 +361,7 @@ def main():
                 # (ffmpeg accepts a frame or two into the pipe buffer before it
                 # notices it has nowhere to put them, so "frame 0" is too strict.)
                 if frames < args.fps:
-                    log(f"{args.device} would not accept video — is something else "
-                        f"already writing to it? Try `gopro-cam stop` first.")
+                    log(device_refused(args.device))
                 else:
                     log("the video device went away")
                 status = 1

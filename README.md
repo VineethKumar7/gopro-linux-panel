@@ -115,6 +115,30 @@ live 30 fps stream on a laptop RTX 3060:
 So on a machine with no usable OpenCL, stay at 720p. If it falls behind it says
 so in the log rather than silently dropping frames.
 
+## The other panel: an ordinary USB camera
+
+`cam-panel` is the same idea for a camera the kernel already understands — a Sony
+ZV-E10 II, a plain webcam, anything UVC. Those need none of the GoPro machinery:
+they arrive as `/dev/videoN` and every app can already use them. What they cannot
+do by themselves is blur their background, and the blur stage here does not care
+where its frames come from, so a second panel costs almost nothing.
+
+```bash
+cam-panel
+```
+
+Pick a camera, and it tells you what that camera actually offers rather than what
+its box claims — the ZV-E10 II over USB, for instance, is `MJPG 1280x720 @ 25 fps`
+and nothing else. Preview it. Then, if you want the background blurred, **Publish
+blurred copy**: a loopback node appears as "Blurred", the blur worker feeds it,
+and you pick that in your meeting app instead of the camera.
+
+With blur off there is nothing to run — use the camera directly. The only step
+that needs root is creating the loopback node, so that one goes through pkexec.
+
+Metadata nodes are filtered out (a UVC camera usually brings one along, and it
+enumerates no formats), and so are loopback nodes, so the list is cameras only.
+
 ## Requirements
 
 * A GoPro that supports webcam mode over USB (HERO 8 and up; developed against a
@@ -160,9 +184,12 @@ It installs:
 |---|---|
 | `/usr/local/sbin/gopro` | upstream's webcam script (needs root to load the module) |
 | `~/.local/bin/gopro-cam` | the terminal wrapper |
-| `~/.local/bin/gopro-panel` | the GUI launcher |
+| `~/.local/bin/gopro-panel` | the GoPro GUI launcher |
+| `~/.local/bin/cam-panel` | the ordinary-camera GUI launcher |
 | `~/.local/share/gopro-panel/gopro_panel.py` | the GUI |
-| `~/.local/share/gopro-panel/gopro_blur.py` | the blur worker |
+| `~/.local/share/gopro-panel/gopro_blur.py` | the blur worker (either camera) |
+| `~/.local/share/gopro-panel/cam_panel.py` | the ordinary-camera GUI |
+| `~/.local/share/gopro-panel/bin/cam-loopback` | creates the loopback node |
 | `~/.local/share/gopro-panel/venv` | mediapipe, for blur (optional) |
 | `~/.local/share/applications/gopro-panel.desktop` | app-menu entry |
 | `~/.config/gopro-panel/config` | settings, if you don't already have one |

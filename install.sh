@@ -29,9 +29,10 @@ if [ "${EUID:-$(id -u)}" -eq 0 ]; then
 fi
 
 if [ "${1:-}" = "--uninstall" ]; then
-  rm -f "$BIN_DIR/gopro-cam" "$BIN_DIR/gopro-panel"   # the venv goes with $DATA_DIR below
+  rm -f "$BIN_DIR/gopro-cam" "$BIN_DIR/gopro-panel" "$BIN_DIR/cam-panel"   # the venv goes with $DATA_DIR below
   rm -rf "$DATA_DIR/gopro-panel"
-  rm -f "$DATA_DIR/applications/gopro-panel.desktop"
+  rm -f "$DATA_DIR/applications/gopro-panel.desktop" \
+        "$DATA_DIR/applications/cam-panel.desktop"
   sudo rm -f "$SBIN"
   green "Removed. Your config in $CONFIG_DIR was left alone."
   exit 0
@@ -69,11 +70,17 @@ install -D -m 0755 "$HERE/bin/gopro-cam"   "$BIN_DIR/gopro-cam"
 install -D -m 0755 "$HERE/bin/gopro-panel" "$BIN_DIR/gopro-panel"
 install -D -m 0644 "$HERE/gopro_panel.py"  "$DATA_DIR/gopro-panel/gopro_panel.py"
 install -D -m 0644 "$HERE/gopro_blur.py"   "$DATA_DIR/gopro-panel/gopro_blur.py"
+install -D -m 0644 "$HERE/cam_panel.py"    "$DATA_DIR/gopro-panel/cam_panel.py"
+install -D -m 0755 "$HERE/bin/cam-loopback" "$DATA_DIR/gopro-panel/bin/cam-loopback"
+install -D -m 0755 "$HERE/bin/cam-panel"   "$BIN_DIR/cam-panel"
 # Point the menu entry at the absolute path: a desktop launcher does not
 # necessarily inherit a shell PATH that includes ~/.local/bin.
 install -D -m 0644 "$HERE/share/applications/gopro-panel.desktop" \
                    "$DATA_DIR/applications/gopro-panel.desktop"
 sed -i "s|^Exec=.*|Exec=$BIN_DIR/gopro-panel|" "$DATA_DIR/applications/gopro-panel.desktop"
+install -D -m 0644 "$HERE/share/applications/cam-panel.desktop" \
+                   "$DATA_DIR/applications/cam-panel.desktop"
+sed -i "s|^Exec=.*|Exec=$BIN_DIR/cam-panel|" "$DATA_DIR/applications/cam-panel.desktop"
 command -v update-desktop-database >/dev/null && \
   update-desktop-database "$DATA_DIR/applications" 2>/dev/null || true
 
