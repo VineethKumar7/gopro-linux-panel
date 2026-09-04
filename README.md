@@ -251,6 +251,27 @@ feeding it. `v4l2-ctl -d /dev/video42 --list-formats-ext` on a fed device shows
 reports `Video Output` only, which is exactly what a consumer chokes on. Check
 `gopro-cam status`, and start the stream again.
 
+**GNOME's Camera app (Snapshot) crashes when you switch to the GoPro.** It is a
+bug in Snapshot, not in the camera. `tests/consumer-matrix.sh` feeds the node one
+pixel format at a time and checks each consumer in turn; on Ubuntu 24.04 with
+Snapshot 46.2 the result is the same whatever it is given:
+
+| format | device lists it | direct V4L2 read | PipeWire source | PipeWire plays | Snapshot |
+|---|---|---|---|---|---|
+| I420 1920x1080 | yes | yes | yes | no | **SEGV** |
+| I420 1280x720 | yes | yes | yes | no | **SEGV** |
+| YUYV 1280x720 | yes | yes | yes | no | **SEGV** |
+| YUYV 640x480 | yes | yes | yes | no | **SEGV** |
+
+Read that left to right: the device is fine — it enumerates its format and any
+program reading V4L2 gets frames. PipeWire even builds a camera source. What
+fails is streaming *through* PipeWire, and Snapshot segfaults rather than
+reporting it, which makes a working camera look broken.
+
+So don't judge the camera by that app. **Chrome, Firefox, Zoom, Meet and OBS read
+the device directly** and are unaffected. The panel's **Preview** button opens
+ffplay on the same device if you just want to see the picture.
+
 **GNOME's Camera app (Snapshot) or Cheese shows the built-in webcam instead** —
 those two take cameras from PipeWire rather than reading V4L2 themselves, and
 PipeWire only registers a camera source if the device advertised *capture* when
@@ -288,6 +309,25 @@ loopback node is created with; it is not a bug.
 `--non-interactive` and `--video-number` and matches non-interactive first, so the
 `42` is silently dropped as a stray argument. `bin/gopro-cam` uses the long form
 `--video-number` for exactly this reason.
+
+## Tests
+
+`tests/consumer-matrix.sh` answers "can anything actually read this device?" It
+needs the camera already streaming (`gopro-cam setup`) and the node free
+(`systemctl --user stop gopro-panel-stream`), then feeds it each pixel format in
+turn and reports, per format, whether the device enumerates it, whether a direct
+V4L2 read works, whether PipeWire builds a camera source, whether a PipeWire
+consumer can play it, and whether GNOME Snapshot survives.
+
+```bash
+./tests/consumer-matrix.sh
+COMBOS="yuv420p:1280:720 yuyv422:640:480" ./tests/consumer-matrix.sh
+```
+
+It waits for the writer to attach rather than sleeping a fixed amount — ffmpeg
+cannot set a format until it has decoded a frame, and joining a live stream means
+waiting for the next I-frame, so a fixed sleep measures impatience rather than
+the device.
 
 ## Licensing
 

@@ -377,6 +377,13 @@ class GoProPanel(Gtk.Window):
         self.btn_stop.connect("clicked", lambda _w: self._stop_webcam())
         btns.pack_start(self.btn_stop, False, False, 0)
 
+        btn_preview = Gtk.Button(label="Preview")
+        btn_preview.set_tooltip_text(
+            "Open the video device in ffplay — the same picture apps get. Reads "
+            "V4L2 directly, so it works when GNOME's Camera app will not.")
+        btn_preview.connect("clicked", lambda _w: self._preview())
+        btns.pack_start(btn_preview, False, False, 0)
+
         btn_nudge = Gtk.Button(label="Rescan")
         btn_nudge.set_tooltip_text(
             "GNOME's Camera app takes cameras from PipeWire, which only registers "
@@ -415,6 +422,27 @@ class GoProPanel(Gtk.Window):
             except Exception as e:
                 GLib.idle_add(self._append_log, f"FOV change failed: {e}\n")
         threading.Thread(target=work, daemon=True).start()
+
+    def _preview(self):
+        """See the finished picture without trusting a camera app to show it.
+
+        GNOME's Snapshot segfaults on a v4l2loopback node whatever format it is
+        given, which makes a working camera look broken. ffplay reads the device
+        directly, the same way browsers and Zoom do.
+        """
+        if not shutil.which("ffplay"):
+            self._append_log("ffplay is not installed (apt install ffmpeg).\n")
+            return
+        if not webcam_state()[1]:
+            self._append_log("Nothing is feeding %s yet — start the webcam first.\n"
+                             % VIDEO_DEV)
+            return
+        subprocess.Popen(
+            ["ffplay", "-hide_banner", "-loglevel", "error", "-f", "v4l2",
+             "-i", VIDEO_DEV, "-window_title", "GoPro preview"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+        self._append_log("preview opened — close its window when done\n")
 
     def _on_blur_changed(self, _widget=None):
         """Write the live-settings file; the worker picks it up mid-stream."""
