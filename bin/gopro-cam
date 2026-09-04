@@ -72,6 +72,20 @@ done
 PYTHON=python3
 [ -x "$DATA_DIR/gopro-panel/venv/bin/python" ] && PYTHON=$DATA_DIR/gopro-panel/venv/bin/python
 
+RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/gopro-panel
+PIDFILE=$RUNTIME_DIR/worker.pid
+
+# The worker's pid, and only if that pid really is the worker. Matching on the
+# name instead -- pkill -f gopro_blur.py -- would also hit an editor that has
+# the file open, and this one sends signals.
+worker_pid() {
+  local pid
+  pid=$(cat "$PIDFILE" 2>/dev/null) || return 1
+  [ -n "$pid" ] || return 1
+  grep -qa gopro_blur.py "/proc/$pid/cmdline" 2>/dev/null || return 1
+  echo "$pid"
+}
+
 red()   { printf '\033[0;31m%s\033[0m\n' "$*"; }
 green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
 dim()   { printf '\033[0;90m%s\033[0m\n' "$*"; }
@@ -143,7 +157,7 @@ setup)  do_setup ;;
 stream) do_stream ;;
 start)  do_setup && do_stream ;;
 stop)
-  pkill -f "gopro_blur.py" 2>/dev/null
+  pid=$(worker_pid) && kill "$pid" 2>/dev/null
   sudo pkill -f "v4l2 $DEV" 2>/dev/null
   sudo pkill -f "gopro webcam" 2>/dev/null
   sudo modprobe -rf v4l2loopback 2>/dev/null
@@ -152,8 +166,8 @@ stop)
 status)
   if [ -e "$DEV" ]; then green "video: $DEV is up"
   else dim "video: not running"; fi
-  if pgrep -f "gopro_blur.py" >/dev/null; then
-    green "blur:  worker running (BLUR=$BLUR, strength $BLUR_STRENGTH)"
+  if pid=$(worker_pid); then
+    green "blur:  worker running as pid $pid (BLUR=$BLUR, strength $BLUR_STRENGTH)"
   else dim "blur:  no worker"; fi
   m=$(mic_source)
   echo

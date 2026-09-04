@@ -40,9 +40,16 @@ def log(*a):
     print("[gopro-blur]", *a, file=sys.stderr, flush=True)
 
 
+def runtime_dir():
+    return Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "gopro-panel"
+
+
 def control_path():
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    return Path(runtime) / "gopro-panel/blur.conf"
+    return runtime_dir() / "blur.conf"
+
+
+def pid_path():
+    return runtime_dir() / "worker.pid"
 
 
 class Control:
@@ -196,6 +203,14 @@ def main():
         decoder.terminate()
         return 1
 
+    # A pidfile, not a name to grep for: "pkill -f gopro_blur.py" would also
+    # match an editor that happens to have the file open.
+    try:
+        pid_path().parent.mkdir(parents=True, exist_ok=True)
+        pid_path().write_text(f"{os.getpid()}\n")
+    except OSError as e:
+        log(f"could not write {pid_path()}: {e}")
+
     compositor = Compositor(width, height, args.seg_width,
                             use_opencl=(args.opencl != "off"))
     if args.opencl == "on" and not compositor.use_opencl:
@@ -259,6 +274,11 @@ def main():
             encoder.wait(timeout=3)
         except subprocess.TimeoutExpired:
             encoder.kill()
+        try:
+            if pid_path().read_text().strip() == str(os.getpid()):
+                pid_path().unlink()
+        except OSError:
+            pass
     return 0 if stop else status
 
 

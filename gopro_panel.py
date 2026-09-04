@@ -77,10 +77,23 @@ DEFAULT_BLUR = CONFIG.get("BLUR", "off").lower() in ("1", "on", "true", "yes")
 DEFAULT_STRENGTH = int(CONFIG.get("BLUR_STRENGTH", "8"))
 
 
+def runtime_dir():
+    return Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "gopro-panel"
+
+
 def control_file():
     """Where the running blur worker looks for live settings."""
-    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
-    return runtime / "gopro-panel/blur.conf"
+    return runtime_dir() / "blur.conf"
+
+
+def blur_worker_alive():
+    """By pidfile, not by name — the name would match anything mentioning it."""
+    try:
+        pid = int((runtime_dir() / "worker.pid").read_text().strip())
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except (OSError, ValueError):
+        return False
+    return b"gopro_blur.py" in cmdline
 
 
 def remember(**pairs):
@@ -212,9 +225,7 @@ def webcam_state():
             feeding = VIDEO_DEV in out
         except Exception:
             pass
-    blurring = subprocess.run(["pgrep", "-f", "gopro_blur.py"],
-                              capture_output=True).returncode == 0
-    return present, feeding, blurring
+    return present, feeding, blur_worker_alive()
 
 
 def mic_source():
